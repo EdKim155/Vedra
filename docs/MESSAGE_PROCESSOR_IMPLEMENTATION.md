@@ -403,3 +403,4 @@ process_post_task.delay(post.id)
 **Статус:** ✅ Complete  
 **Следующий этап:** Промпт 5.1 - AI Processing Service
 
+

@@ -121,8 +121,8 @@ def is_valid_message(message) -> bool:
     Returns:
         True if message should be processed
     """
-    # Skip deleted messages
-    if not message or message.deleted:
+    # Skip empty messages
+    if not message:
         return False
     
     # Skip service messages (user joined, pinned message, etc.)
@@ -241,4 +241,5 @@ __all__ = [
     "format_datetime",
     "MessageDeduplicator",
 ]
+
 

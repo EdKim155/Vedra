@@ -68,9 +68,9 @@ class ChannelMonitor:
         
         # Initialize Telethon client
         self.client = TelegramClient(
-            str(self.settings.session_path),
-            self.settings.telegram_api_id,
-            self.settings.telegram_api_hash,
+            str(self.settings.telegram.session_path),
+            self.settings.telegram.api_id,
+            self.settings.telegram.api_hash.get_secret_value(),
             sequential_updates=True,  # Process updates in order
         )
         
@@ -171,9 +171,9 @@ class ChannelMonitor:
         logger.info("Connecting to Telegram...")
         
         # Check if session file exists
-        if not self.settings.session_path.exists():
+        if not self.settings.telegram.session_path.exists():
             raise RuntimeError(
-                f"Session file not found: {self.settings.session_path}\n"
+                f"Session file not found: {self.settings.telegram.session_path}\n"
                 "Please run scripts/create_session.py first"
             )
         
@@ -282,8 +282,8 @@ class ChannelMonitor:
         """Register Telethon event handlers."""
         logger.info("Registering event handlers...")
         
-        # Handler for new messages in channels
-        @self.client.on(events.NewMessage(chats=list(self.channel_entities.values())))
+        # Handler for new messages in ALL channels (filtering done in handler)
+        @self.client.on(events.NewMessage())
         async def new_message_handler(event: events.NewMessage.Event) -> None:
             """Handle new message in monitored channel."""
             await self._handle_new_message(event)
@@ -377,6 +377,21 @@ class ChannelMonitor:
                         f"✅ Message processed and saved: Post ID={post.id}, "
                         f"Channel={channel.channel_title}"
                     )
+                    
+                    # Queue for AI processing and publishing
+                    from cars_bot.tasks.ai_tasks import process_post_task
+                    
+                    try:
+                        process_post_task.apply_async(
+                            args=[post.id],
+                            countdown=2,  # Small delay
+                            priority=8,   # High priority
+                        )
+                        logger.info(f"🎯 Queued post {post.id} for AI processing")
+                    except Exception as task_error:
+                        logger.error(
+                            f"Failed to queue post {post.id} for processing: {task_error}"
+                        )
                 else:
                     logger.debug(
                         f"Message {message.id} from {channel.channel_title} "
@@ -397,7 +412,7 @@ class ChannelMonitor:
         """
         while self.is_running:
             try:
-                await asyncio.sleep(self.settings.monitor_update_interval)
+                await asyncio.sleep(self.settings.monitoring.update_interval)
                 
                 logger.info("Updating channels list...")
                 
@@ -496,7 +511,7 @@ async def run_monitor():
     
     # Initialize database
     from cars_bot.database.session import init_database
-    init_database(settings.database_url, echo=settings.debug)
+    init_database(str(settings.database.url), echo=settings.app.debug)
     
     # Create monitor
     monitor = ChannelMonitor(settings)

@@ -328,6 +328,11 @@ class MessageProcessor:
                     # Use channel ID for private channels
                     message_link = f"https://t.me/c/{channel_id}/{message.id}"
             
+            # Convert timezone-aware datetime to naive (PostgreSQL requirement)
+            msg_date = message.date or datetime.now()
+            if msg_date.tzinfo is not None:
+                msg_date = msg_date.replace(tzinfo=None)
+            
             return MessageData(
                 message_id=message.id,
                 channel_id=channel.channel_id,
@@ -335,7 +340,7 @@ class MessageProcessor:
                 raw_text=raw_text,
                 media=media_info,
                 message_link=message_link,
-                date=message.date or datetime.now(),
+                date=msg_date,
             )
             
         except Exception as e:
@@ -596,4 +601,5 @@ async def process_telegram_message(
     """
     processor = MessageProcessor()
     return await processor.process_message(message, channel, session)
+
 

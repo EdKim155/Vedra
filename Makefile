@@ -33,10 +33,29 @@ format: ## Format code
 
 # Running services
 run-bot: ## Run Telegram bot
-	python -m cars_bot.bot
+	python scripts/run_bot.py
 
 run-monitor: ## Run channel monitor
 	python -m cars_bot.monitor.monitor
+
+# Celery services
+run-celery-worker: ## Run Celery worker
+	./scripts/start_celery_worker.sh
+
+run-celery-beat: ## Run Celery Beat scheduler
+	./scripts/start_celery_beat.sh
+
+stop-celery: ## Stop all Celery processes
+	./scripts/stop_celery.sh
+
+celery-status: ## Show Celery worker status
+	celery -A cars_bot.celery_app inspect active
+
+celery-stats: ## Show Celery statistics
+	celery -A cars_bot.celery_app inspect stats
+
+celery-purge: ## Purge all Celery queues (use with caution!)
+	celery -A cars_bot.celery_app purge -f
 
 # Setup
 create-session: ## Create Telegram user session for monitoring

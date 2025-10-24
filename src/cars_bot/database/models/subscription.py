@@ -91,7 +91,7 @@ class Subscription(Base, TimestampMixin, ReprMixin):
         "Payment",
         back_populates="subscription",
         cascade="all, delete-orphan",
-        lazy="selectinload"
+        lazy="select"
     )
 
     # Indexes

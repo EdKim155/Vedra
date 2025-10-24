@@ -1,6 +1,6 @@
 # Telegram Bot & Client
 aiogram==3.22.0
-telethon==2.0.0
+telethon==1.37.0
 
 # Google Sheets
 gspread==6.2.1
@@ -16,7 +16,7 @@ psycopg2-binary==2.9.10
 # Redis & Task Queue
 redis==5.2.1
 celery==5.4.0
-celery-sqlalchemy-scheduler==0.4.0
+celery-sqlalchemy-scheduler==0.3.0
 
 # AI / OpenAI
 openai==1.59.4

@@ -21,12 +21,42 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Create all tables."""
 
-    # Create enum types
-    op.execute("CREATE TYPE subscription_type AS ENUM ('free', 'monthly', 'yearly')")
-    op.execute("CREATE TYPE payment_status AS ENUM ('pending', 'completed', 'failed', 'refunded')")
-    op.execute("CREATE TYPE payment_provider AS ENUM ('yookassa', 'telegram_stars', 'mock')")
-    op.execute("CREATE TYPE autoteka_status AS ENUM ('green', 'has_accidents', 'unknown')")
-    op.execute("CREATE TYPE transmission_type AS ENUM ('automatic', 'manual', 'robot', 'variator')")
+    # Create enum types (with existence check to avoid duplicates)
+    op.execute("""
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'subscription_type') THEN
+                CREATE TYPE subscription_type AS ENUM ('free', 'monthly', 'yearly');
+            END IF;
+        END $$;
+    """)
+    op.execute("""
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'payment_status') THEN
+                CREATE TYPE payment_status AS ENUM ('pending', 'completed', 'failed', 'refunded');
+            END IF;
+        END $$;
+    """)
+    op.execute("""
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'payment_provider') THEN
+                CREATE TYPE payment_provider AS ENUM ('yookassa', 'telegram_stars', 'mock');
+            END IF;
+        END $$;
+    """)
+    op.execute("""
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'autoteka_status') THEN
+                CREATE TYPE autoteka_status AS ENUM ('green', 'has_accidents', 'unknown');
+            END IF;
+        END $$;
+    """)
+    op.execute("""
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'transmission_type') THEN
+                CREATE TYPE transmission_type AS ENUM ('automatic', 'manual', 'robot', 'variator');
+            END IF;
+        END $$;
+    """)
 
     # Create channels table
     op.create_table(

@@ -81,7 +81,7 @@ class User(Base, TimestampMixin, ReprMixin):
         "Subscription",
         back_populates="user",
         cascade="all, delete-orphan",
-        lazy="selectinload",
+        lazy="select",
         order_by="Subscription.start_date.desc()"
     )
 
@@ -89,7 +89,7 @@ class User(Base, TimestampMixin, ReprMixin):
         "Payment",
         back_populates="user",
         cascade="all, delete-orphan",
-        lazy="selectinload",
+        lazy="select",
         order_by="Payment.date_created.desc()"
     )
 
@@ -97,7 +97,7 @@ class User(Base, TimestampMixin, ReprMixin):
         "ContactRequest",
         back_populates="user",
         cascade="all, delete-orphan",
-        lazy="selectinload",
+        lazy="select",
         order_by="ContactRequest.date_requested.desc()"
     )
 
@@ -114,8 +114,3 @@ class User(Base, TimestampMixin, ReprMixin):
         if self.last_name:
             return f"{self.first_name} {self.last_name}"
         return self.first_name
-
-    @property
-    def has_active_subscription(self) -> bool:
-        """Check if user has at least one active subscription."""
-        return any(sub.is_active for sub in self.subscriptions)

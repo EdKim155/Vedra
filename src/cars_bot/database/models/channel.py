@@ -78,7 +78,7 @@ class Channel(Base, TimestampMixin, ReprMixin):
         "Post",
         back_populates="source_channel",
         cascade="all, delete-orphan",
-        lazy="selectinload"
+        lazy="select"  # Use 'select' (default) or 'joined' for eager loading
     )
 
     # Indexes

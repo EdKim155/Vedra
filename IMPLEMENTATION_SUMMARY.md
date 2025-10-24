@@ -269,3 +269,4 @@ process_post_task.delay(post.id)
 **Версия:** 1.0.0  
 **Автор:** AI Assistant с использованием Context7
 
+

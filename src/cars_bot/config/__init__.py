@@ -1,188 +1,111 @@
 """
 Configuration management for Cars Bot.
+
+This module provides access to application settings using Pydantic Settings v2.
+Settings are loaded from environment variables and .env file.
+
+New structured configuration is available in settings.py
+This module maintains backward compatibility with old flat Settings class.
 """
 
-import os
-from pathlib import Path
-from typing import Optional
+# Import new structured settings
+from cars_bot.config.settings import (
+    AppConfig,
+    BotConfig,
+    CeleryConfig,
+    DatabaseConfig,
+    GoogleSheetsConfig,
+    LoggingConfig,
+    MetricsConfig,
+    MonitoringConfig,
+    OpenAIConfig,
+    RedisConfig,
+    Settings,
+    TelegramSessionConfig,
+    get_settings,
+    init_settings,
+    reset_settings,
+)
 
-from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+# Legacy compatibility wrapper
+settings = None
 
 
-class Settings(BaseSettings):
+def get_legacy_settings():
     """
-    Application settings loaded from environment variables.
+    Get settings with legacy interface for backward compatibility.
     
-    All sensitive data should be stored in .env file or environment variables.
+    This maintains the old flat structure for existing code.
+    New code should use get_settings() which returns structured config.
     """
+    new_settings = get_settings()
     
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="ignore",
-    )
+    # Create a compatibility object with old-style attributes
+    class LegacySettings:
+        def __init__(self, s: Settings):
+            # Application
+            self.app_name = s.app.name
+            self.debug = s.app.debug
+            
+            # Database
+            self.database_url = str(s.database.url)
+            
+            # Bot
+            self.bot_token = s.bot.token.get_secret_value()
+            self.news_channel_id = s.bot.news_channel_id
+            
+            # Telegram
+            self.telegram_api_id = s.telegram.api_id
+            self.telegram_api_hash = s.telegram.api_hash.get_secret_value()
+            self.telegram_session_name = s.telegram.session_name
+            self.telegram_session_dir = str(s.telegram.session_dir)
+            
+            # Google Sheets
+            self.google_sheets_id = s.google.spreadsheet_id
+            self.google_credentials_file = str(s.google.credentials_file)
+            
+            # Redis
+            self.redis_url = str(s.redis.url)
+            
+            # OpenAI
+            self.openai_api_key = s.openai.api_key.get_secret_value()
+            self.openai_model = s.openai.model
+            
+            # Monitoring
+            self.monitor_update_interval = s.monitoring.update_interval
+            self.monitor_rate_limit_delay = s.monitoring.rate_limit_delay
+            
+            # Logging
+            self.log_level = s.logging.level
+            
+            # Properties
+            self.session_path = s.telegram.session_path
+            self.google_credentials_path = s.google.credentials_file
     
-    # Application
-    app_name: str = "Cars Bot"
-    debug: bool = Field(default=False, validation_alias="DEBUG")
-    
-    # Database
-    database_url: str = Field(
-        ...,
-        validation_alias="DATABASE_URL",
-        description="PostgreSQL connection URL (asyncpg format)"
-    )
-    
-    # Telegram Bot
-    bot_token: str = Field(
-        ...,
-        validation_alias="BOT_TOKEN",
-        description="Telegram Bot API token from @BotFather"
-    )
-    
-    news_channel_id: str = Field(
-        ...,
-        validation_alias="NEWS_CHANNEL_ID",
-        description="Channel ID for publishing posts"
-    )
-    
-    # Telegram User Session (for monitoring)
-    telegram_api_id: int = Field(
-        ...,
-        validation_alias="TELEGRAM_API_ID",
-        description="API ID from https://my.telegram.org"
-    )
-    
-    telegram_api_hash: str = Field(
-        ...,
-        validation_alias="TELEGRAM_API_HASH",
-        description="API Hash from https://my.telegram.org"
-    )
-    
-    telegram_session_name: str = Field(
-        default="monitor_session",
-        validation_alias="TELEGRAM_SESSION_NAME",
-        description="Name for Telethon session file"
-    )
-    
-    telegram_session_dir: str = Field(
-        default="sessions",
-        validation_alias="TELEGRAM_SESSION_DIR",
-        description="Directory for storing session files"
-    )
-    
-    # Google Sheets
-    google_sheets_id: str = Field(
-        ...,
-        validation_alias="GOOGLE_SHEETS_ID",
-        description="Google Sheets spreadsheet ID"
-    )
-    
-    google_credentials_file: str = Field(
-        default="secrets/service_account.json",
-        validation_alias="GOOGLE_CREDENTIALS_FILE",
-        description="Path to Google Service Account JSON file"
-    )
-    
-    # Redis
-    redis_url: str = Field(
-        default="redis://localhost:6379/0",
-        validation_alias="REDIS_URL",
-        description="Redis connection URL"
-    )
-    
-    # OpenAI
-    openai_api_key: str = Field(
-        ...,
-        validation_alias="OPENAI_API_KEY",
-        description="OpenAI API key"
-    )
-    
-    openai_model: str = Field(
-        default="gpt-4-turbo-preview",
-        validation_alias="OPENAI_MODEL",
-        description="OpenAI model to use"
-    )
-    
-    # Monitoring
-    monitor_update_interval: int = Field(
-        default=60,
-        validation_alias="MONITOR_UPDATE_INTERVAL",
-        description="Interval in seconds to update channels list from Google Sheets"
-    )
-    
-    monitor_rate_limit_delay: float = Field(
-        default=1.0,
-        validation_alias="MONITOR_RATE_LIMIT_DELAY",
-        description="Delay in seconds between API requests (rate limiting)"
-    )
-    
-    # Logging
-    log_level: str = Field(
-        default="INFO",
-        validation_alias="LOG_LEVEL",
-        description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"
-    )
-    
-    @field_validator("telegram_session_dir")
-    @classmethod
-    def create_session_dir(cls, v: str) -> str:
-        """Create session directory if it doesn't exist."""
-        path = Path(v)
-        path.mkdir(parents=True, exist_ok=True)
-        return str(path)
-    
-    @property
-    def session_path(self) -> Path:
-        """Get full path to session file."""
-        return Path(self.telegram_session_dir) / f"{self.telegram_session_name}.session"
-    
-    @property
-    def google_credentials_path(self) -> Path:
-        """Get full path to Google credentials file."""
-        return Path(self.google_credentials_file)
-
-
-# Global settings instance
-settings: Optional[Settings] = None
-
-
-def get_settings() -> Settings:
-    """
-    Get application settings singleton.
-    
-    Returns:
-        Settings instance
-    
-    Raises:
-        RuntimeError: If settings are not initialized
-    """
-    global settings
-    
-    if settings is None:
-        settings = Settings()
-    
-    return settings
-
-
-def init_settings() -> Settings:
-    """
-    Initialize application settings.
-    
-    Returns:
-        Initialized Settings instance
-    """
-    global settings
-    settings = Settings()
-    return settings
+    return LegacySettings(new_settings)
 
 
 __all__ = [
+    # New structured settings
     "Settings",
-    "settings",
     "get_settings",
     "init_settings",
+    "reset_settings",
+    # Configuration classes
+    "AppConfig",
+    "DatabaseConfig",
+    "RedisConfig",
+    "BotConfig",
+    "TelegramSessionConfig",
+    "GoogleSheetsConfig",
+    "OpenAIConfig",
+    "MonitoringConfig",
+    "CeleryConfig",
+    "LoggingConfig",
+    "MetricsConfig",
+    # Legacy compatibility
+    "settings",
+    "get_legacy_settings",
 ]
+
 

@@ -116,7 +116,7 @@ class Post(Base, TimestampMixin, ReprMixin):
         back_populates="post",
         uselist=False,
         cascade="all, delete-orphan",
-        lazy="selectinload"
+        lazy="select"
     )
 
     seller_contact: Mapped[Optional["SellerContact"]] = relationship(
@@ -124,14 +124,14 @@ class Post(Base, TimestampMixin, ReprMixin):
         back_populates="post",
         uselist=False,
         cascade="all, delete-orphan",
-        lazy="selectinload"
+        lazy="select"
     )
 
     contact_requests: Mapped[list["ContactRequest"]] = relationship(
         "ContactRequest",
         back_populates="post",
         cascade="all, delete-orphan",
-        lazy="selectinload"
+        lazy="select"
     )
 
     # Indexes

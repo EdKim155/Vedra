@@ -18,6 +18,10 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
+# Load environment variables before importing settings
+from dotenv import load_dotenv
+load_dotenv(project_root / ".env")
+
 from telethon import TelegramClient
 from telethon.errors import (
     ApiIdInvalidError,
@@ -27,7 +31,7 @@ from telethon.errors import (
 )
 from telethon.sessions import StringSession
 
-from cars_bot.config import get_settings
+from cars_bot.config.settings import TelegramSessionConfig
 
 
 async def create_session():
@@ -43,7 +47,7 @@ async def create_session():
     print()
     
     try:
-        settings = get_settings()
+        settings = TelegramSessionConfig()
     except Exception as e:
         print(f"❌ Error loading settings: {e}")
         print()
@@ -54,8 +58,8 @@ async def create_session():
         print("  - TELEGRAM_SESSION_DIR (optional)")
         return False
     
-    print(f"📱 API ID: {settings.telegram_api_id}")
-    print(f"🔑 API Hash: {settings.telegram_api_hash[:8]}...")
+    print(f"📱 API ID: {settings.api_id}")
+    print(f"🔑 API Hash: {settings.api_hash.get_secret_value()[:8]}...")
     print(f"📁 Session file: {settings.session_path}")
     print()
     
@@ -74,8 +78,8 @@ async def create_session():
     # Initialize Telethon client
     client = TelegramClient(
         str(settings.session_path),
-        settings.telegram_api_id,
-        settings.telegram_api_hash,
+        settings.api_id,
+        settings.api_hash.get_secret_value(),
         sequential_updates=True,
     )
     
@@ -163,7 +167,7 @@ async def create_session():
         
         # Save as string session (backup)
         string_session = StringSession.save(client.session)
-        backup_path = settings.session_path.parent / f"{settings.telegram_session_name}_backup.txt"
+        backup_path = settings.session_path.parent / f"{settings.session_name}_backup.txt"
         
         with open(backup_path, "w") as f:
             f.write(string_session)
@@ -212,7 +216,7 @@ async def test_session():
     print()
     
     try:
-        settings = get_settings()
+        settings = TelegramSessionConfig()
     except Exception as e:
         print(f"❌ Error loading settings: {e}")
         return False
@@ -227,8 +231,8 @@ async def test_session():
     
     client = TelegramClient(
         str(settings.session_path),
-        settings.telegram_api_id,
-        settings.telegram_api_hash,
+        settings.api_id,
+        settings.api_hash.get_secret_value(),
     )
     
     try:
@@ -277,4 +281,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

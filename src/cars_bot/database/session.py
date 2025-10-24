@@ -48,15 +48,12 @@ class DatabaseManager:
         """
         logger.info("Creating database engine")
 
+        # Use NullPool for Celery workers to avoid event loop issues
+        # Each task creates new connections
         self._engine = create_async_engine(
             self.database_url,
             echo=self.echo,
-            pool_pre_ping=True,  # Verify connections before using
-            pool_size=20,  # Connection pool size
-            max_overflow=10,  # Maximum overflow connections
-            pool_recycle=3600,  # Recycle connections after 1 hour
-            # Use NullPool for development to avoid connection issues
-            poolclass=NullPool if "sqlite" in self.database_url else None,
+            poolclass=NullPool,  # No connection pooling
         )
 
         return self._engine

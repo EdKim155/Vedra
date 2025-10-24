@@ -16,13 +16,21 @@ class ChannelRow(BaseModel):
 
     id: Optional[int] = Field(None, description="Channel ID (auto-generated)")
     username: str = Field(..., description="Channel username or link")
-    title: str = Field(..., description="Human-readable channel name")
+    title: str = Field("", description="Human-readable channel name")
     is_active: bool = Field(True, description="Whether monitoring is enabled")
     keywords: Optional[str] = Field(None, description="Comma-separated keywords")
     date_added: Optional[datetime] = Field(None, description="When channel was added")
     total_posts: int = Field(0, description="Total posts found")
     published_posts: int = Field(0, description="Total posts published")
     last_post_date: Optional[datetime] = Field(None, description="Date of last processed post")
+    
+    @field_validator("id", mode="before")
+    @classmethod
+    def parse_id(cls, v):
+        """Handle empty string for ID."""
+        if v == "" or v is None:
+            return None
+        return int(v)
 
     @field_validator("keywords", mode="before")
     @classmethod
