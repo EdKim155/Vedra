@@ -119,6 +119,7 @@ class MediaInfo(BaseModel):
         has_document: Whether message contains document(s)
         photo_count: Number of photos
         media_group_id: Media group ID if multiple photos
+        file_ids: List of Telegram file IDs for media
     """
     
     has_photo: bool = Field(default=False, description="Message has photos")
@@ -127,6 +128,10 @@ class MediaInfo(BaseModel):
     media_group_id: Optional[int] = Field(
         default=None,
         description="Media group ID for albums"
+    )
+    file_ids: list[str] = Field(
+        default_factory=list,
+        description="List of Telegram file IDs"
     )
 
 
@@ -366,11 +371,21 @@ class MessageProcessor:
         # Get media group ID if present
         media_group_id = getattr(message, 'grouped_id', None)
         
+        # Extract file IDs for photos
+        file_ids = []
+        if has_photo and hasattr(message.media, 'photo'):
+            # Get the largest photo size (highest quality)
+            photo = message.media.photo
+            if hasattr(photo, 'id'):
+                # Store photo ID and access_hash for later retrieval
+                file_ids.append(f"photo:{photo.id}:{getattr(photo, 'access_hash', 0)}")
+        
         return MediaInfo(
             has_photo=has_photo,
             has_document=has_document,
             photo_count=photo_count,
             media_group_id=media_group_id,
+            file_ids=file_ids,
         )
     
     async def _is_duplicate(
@@ -542,6 +557,7 @@ class MessageProcessor:
             original_message_id=message_data.message_id,
             original_message_link=message_data.message_link,
             original_text=message_data.text,
+            media_files=message_data.media.file_ids if message_data.media.file_ids else None,
             date_found=message_data.date,
             is_selling_post=None,  # Will be determined by AI
             confidence_score=None,

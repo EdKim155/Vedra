@@ -67,9 +67,16 @@ def publish_post_task(self, post_id: int) -> dict:
     start_time = time.time()
 
     async def do_publish():
+        from sqlalchemy.orm import selectinload
+        
         db_manager = get_db_manager()
         async with db_manager.session() as session:
-            result = await session.execute(select(Post).where(Post.id == post_id))
+            # Load post with car_data relationship (eager loading)
+            result = await session.execute(
+                select(Post)
+                .where(Post.id == post_id)
+                .options(selectinload(Post.car_data))
+            )
             post = result.scalar_one_or_none()
 
             if not post:
@@ -86,21 +93,43 @@ def publish_post_task(self, post_id: int) -> dict:
 
             try:
                 # Use PublishingService to publish
+                from aiogram import Bot
                 from cars_bot.publishing.service import PublishingService
                 from cars_bot.config import get_settings
                 
                 settings = get_settings()
-                publishing_service = PublishingService()
                 
-                # Publish post
-                message_id = await publishing_service.publish_post(post, session)
-
-                # Update post
-                post.published = True
-                post.published_message_id = message_id
-                post.date_published = datetime.now()
-
-                await session.commit()
+                # Validate channel ID format
+                channel_id = settings.bot.news_channel_id
+                logger.info(f"Publishing to channel: {channel_id}")
+                
+                # Create Bot instance
+                bot = Bot(token=settings.bot.token.get_secret_value())
+                
+                # Initialize publishing service
+                publishing_service = PublishingService(
+                    bot=bot,
+                    channel_id=channel_id,
+                    session=session
+                )
+                
+                # Publish post to channel (updates post in DB automatically)
+                # Media files are automatically copied from original message
+                success = await publishing_service.publish_to_channel(
+                    post_id=post.id,
+                    media_urls=None
+                )
+                
+                # Close bot session
+                await bot.session.close()
+                
+                if not success:
+                    logger.error(f"Failed to publish post {post_id}")
+                    return {"success": False, "error": "Publishing failed"}
+                
+                # Get published message ID from updated post
+                await session.refresh(post)
+                message_id = post.published_message_id
 
                 publishing_time = time.time() - start_time
 

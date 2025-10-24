@@ -151,8 +151,8 @@ class PublishingService:
             mileage_formatted = f"{car_data.mileage:,}".replace(",", " ")
             history_lines.append(f"• Пробег: {mileage_formatted} км")
         
-        # Autoteka status
-        if car_data.autoteka_status:
+        # Autoteka status (only show if not unknown)
+        if car_data.autoteka_status and car_data.autoteka_status != AutotekaStatus.UNKNOWN:
             status_text = self._get_autoteka_status_text(car_data.autoteka_status)
             history_lines.append(f"• Автотека: {status_text}")
         
@@ -241,7 +241,7 @@ class PublishingService:
         
         Args:
             post_id: Post ID from database
-            media_urls: List of media URLs (photos) to send
+            media_urls: List of media URLs (photos) to send (deprecated, uses media_files from post)
         
         Returns:
             True if published successfully, False otherwise
@@ -270,14 +270,22 @@ class PublishingService:
             # Get contact button
             keyboard = get_contact_button(post_id)
             
-            # Publish based on media availability
-            if media_urls and len(media_urls) > 0:
+            # Try to copy original message with media if available
+            if post.media_files and len(post.media_files) > 0:
+                message_id = await self._copy_original_message_with_text(
+                    post,
+                    post_text,
+                    keyboard
+                )
+            elif media_urls and len(media_urls) > 0:
+                # Fallback to media URLs if provided
                 message_id = await self._publish_with_media(
                     post_text,
                     media_urls,
                     keyboard
                 )
             else:
+                # Text only
                 message_id = await self._publish_text_only(post_text, keyboard)
             
             if message_id:
@@ -305,6 +313,92 @@ class PublishingService:
             logger.error(f"Error publishing post {post_id}: {e}", exc_info=True)
             await self.session.rollback()
             return False
+    
+    async def _copy_original_message_with_text(
+        self,
+        post: Post,
+        new_caption: str,
+        keyboard: InlineKeyboardMarkup
+    ) -> Optional[int]:
+        """
+        Forward original message with media and send new caption separately.
+        
+        For media groups (multiple photos/videos), forwards the entire group.
+        Then sends caption and button in a separate message.
+        
+        Args:
+            post: Post object with source channel and message info
+            new_caption: New caption text
+            keyboard: Inline keyboard markup
+        
+        Returns:
+            Message ID if successful, None otherwise
+        """
+        try:
+            # Get source channel ID from post
+            source_channel = post.source_channel
+            if not source_channel or not source_channel.channel_id:
+                logger.warning(f"Post {post.id} has no source channel info")
+                return await self._publish_text_only(new_caption, keyboard)
+            
+            # Parse channel ID
+            source_chat_id = source_channel.channel_id
+            if source_chat_id.startswith('-100'):
+                source_chat_id = int(source_chat_id)
+            elif source_chat_id.startswith('@'):
+                pass
+            else:
+                try:
+                    source_chat_id = int(source_chat_id)
+                except ValueError:
+                    logger.error(f"Invalid channel ID format: {source_chat_id}")
+                    return await self._publish_text_only(new_caption, keyboard)
+            
+            # Try to copy message (preserves media, removes forwarding label)
+            try:
+                # First try copy_message (aiogram method)
+                copied_message = await self.bot.copy_message(
+                    chat_id=self.channel_id,
+                    from_chat_id=source_chat_id,
+                    message_id=post.original_message_id,
+                    caption=""  # Remove original caption
+                )
+                first_message_id = copied_message.message_id
+            except Exception as copy_error:
+                logger.warning(f"copy_message failed: {copy_error}, trying forward")
+                # Fallback to forward if copy fails
+                forwarded_message = await self.bot.forward_message(
+                    chat_id=self.channel_id,
+                    from_chat_id=source_chat_id,
+                    message_id=post.original_message_id
+                )
+                first_message_id = forwarded_message.message_id
+            
+            # Send caption and button in a separate message right after media
+            caption_message = await self.bot.send_message(
+                chat_id=self.channel_id,
+                text=new_caption,
+                reply_markup=keyboard,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+            
+            logger.info(
+                f"Forwarded message {post.original_message_id} from {source_chat_id} "
+                f"(media: {first_message_id}, caption: {caption_message.message_id})"
+            )
+            
+            # Return caption message ID as it has the button
+            return caption_message.message_id
+        
+        except TelegramAPIError as e:
+            logger.error(
+                f"Error forwarding message {post.original_message_id} from "
+                f"{post.source_channel.channel_id}: {e}"
+            )
+            # Fallback to text-only if forward fails
+            logger.info("Falling back to text-only publication")
+            return await self._publish_text_only(new_caption, keyboard)
     
     async def _publish_with_media(
         self,

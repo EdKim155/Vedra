@@ -80,7 +80,25 @@ def sync_channels_task(self) -> dict:
                 for channel_data in channels_data:
                     # Generate channel_id from username (add @ if not present)
                     username = channel_data.username.strip()
-                    channel_id = username if username.startswith('@') else f'@{username}'
+                    
+                    # Skip empty or invalid usernames
+                    if not username or username == '@':
+                        logger.warning(
+                            f"Skipping invalid channel: username='{username}', "
+                            f"title='{channel_data.title}'"
+                        )
+                        continue
+                    
+                    # Clean username - remove @ for storage
+                    clean_username = username.lstrip('@')
+                    if not clean_username:
+                        logger.warning(
+                            f"Skipping channel with empty username after cleaning: '{username}'"
+                        )
+                        continue
+                    
+                    # Channel ID is always with @
+                    channel_id = f'@{clean_username}' if not username.startswith('@') else username
                     
                     result = await session.execute(
                         select(Channel).where(
@@ -92,7 +110,7 @@ def sync_channels_task(self) -> dict:
                     if channel:
                         # Update existing
                         channel.channel_title = channel_data.title
-                        channel.channel_username = username.lstrip('@')
+                        channel.channel_username = clean_username
                         channel.is_active = channel_data.is_active
                         channel.keywords = channel_data.keywords_list
                         updated_count += 1
@@ -100,7 +118,7 @@ def sync_channels_task(self) -> dict:
                         # Add new
                         channel = Channel(
                             channel_id=channel_id,
-                            channel_username=username.lstrip('@'),
+                            channel_username=clean_username,
                             channel_title=channel_data.title,
                             is_active=channel_data.is_active,
                             keywords=channel_data.keywords_list,

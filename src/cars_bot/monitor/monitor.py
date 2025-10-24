@@ -19,6 +19,7 @@ from telethon.errors import (
     RPCError,
     SessionPasswordNeededError,
 )
+from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Channel, Message
 
 from cars_bot.config import Settings, get_settings
@@ -244,6 +245,9 @@ class ChannelMonitor:
                 logger.warning(f"Entity {username} is not a channel, skipping")
                 return
             
+            # Auto-subscribe to channel if not already subscribed
+            await self._ensure_channel_subscription(entity)
+            
             # Store channel
             channel_id = extract_channel_id(entity)
             self.monitored_channels[channel_id] = channel
@@ -264,6 +268,37 @@ class ChannelMonitor:
             await asyncio.sleep(e.seconds)
         except Exception as e:
             logger.error(f"Error adding channel {channel.channel_username}: {e}")
+    
+    async def _ensure_channel_subscription(self, entity: Channel) -> None:
+        """
+        Ensure the user is subscribed to the channel.
+        
+        Args:
+            entity: Telethon Channel entity
+        """
+        try:
+            # Check if already subscribed by trying to get full channel info
+            full_channel = await self.client.get_entity(entity)
+            
+            # Try to join the channel if it's public
+            try:
+                await self.client(JoinChannelRequest(entity))
+                logger.info(
+                    f"📝 Subscribed to channel: {entity.title} "
+                    f"(@{entity.username if entity.username else entity.id})"
+                )
+            except Exception as join_error:
+                # Already subscribed or private channel
+                if "already" in str(join_error).lower():
+                    logger.debug(
+                        f"Already subscribed to: {entity.title}"
+                    )
+                else:
+                    logger.debug(
+                        f"Could not auto-subscribe to {entity.title}: {join_error}"
+                    )
+        except Exception as e:
+            logger.debug(f"Subscription check for {entity.title}: {e}")
     
     async def _remove_channel(self, channel_id: str) -> None:
         """

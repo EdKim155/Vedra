@@ -263,13 +263,21 @@ class GoogleSheetsManager:
             channels = []
             for record in records:
                 try:
+                    # Get username and validate it's not empty
+                    username = str(record.get("Username канала", "")).strip()
+                    if not username or username == '@':
+                        logger.warning(
+                            f"Skipping channel row with empty username: {record}"
+                        )
+                        continue
+                    
                     # Convert TRUE/FALSE strings to boolean
                     if isinstance(record.get("Активен"), str):
                         record["Активен"] = record["Активен"].upper() == "TRUE"
 
                     channel = ChannelRow(
                         id=record.get("ID"),
-                        username=record.get("Username канала", ""),
+                        username=username,
                         title=record.get("Название канала", ""),
                         is_active=record.get("Активен", True),
                         keywords=record.get("Ключевые слова"),
@@ -513,6 +521,68 @@ class GoogleSheetsManager:
             raise
         except Exception as e:
             logger.error(f"Error updating subscriber: {e}")
+            raise
+
+    def update_subscribers(self, subscribers_data: list[dict]) -> None:
+        """
+        Bulk update all subscribers in the sheet.
+
+        Args:
+            subscribers_data: List of subscriber dictionaries with keys:
+                - user_id
+                - username
+                - first_name
+                - last_name
+                - subscription_type
+                - is_active
+                - start_date
+                - end_date
+                - registered_at
+        """
+        try:
+            worksheet = self._get_worksheet(self.SHEET_SUBSCRIBERS)
+            
+            # Clear existing data (except header) by deleting rows 2 onwards
+            self.rate_limiter.wait_if_needed()
+            all_values = worksheet.get_all_values()
+            
+            # If there are rows beyond header, delete them
+            if len(all_values) > 1:
+                # Delete all rows except header (row 1)
+                worksheet.delete_rows(2, len(all_values))
+                self.rate_limiter.wait_if_needed()
+            
+            if not subscribers_data:
+                logger.info("No subscribers to update")
+                return
+            
+            # Prepare rows
+            rows = []
+            for sub in subscribers_data:
+                row = [
+                    sub.get("user_id", ""),
+                    sub.get("username", ""),
+                    f"{sub.get('first_name', '')} {sub.get('last_name', '')}".strip(),
+                    sub.get("subscription_type", "FREE"),
+                    "TRUE" if sub.get("is_active", False) else "FALSE",
+                    sub.get("start_date").strftime("%Y-%m-%d %H:%M:%S") if sub.get("start_date") else "",
+                    sub.get("end_date").strftime("%Y-%m-%d %H:%M:%S") if sub.get("end_date") else "",
+                    sub.get("registered_at").strftime("%Y-%m-%d %H:%M:%S") if sub.get("registered_at") else "",
+                    0,  # contact_requests - placeholder
+                ]
+                rows.append(row)
+            
+            # Batch update
+            self.rate_limiter.wait_if_needed()
+            worksheet.append_rows(rows, value_input_option="USER_ENTERED")
+            
+            logger.info(f"Updated {len(subscribers_data)} subscribers in Google Sheets")
+
+        except APIError as e:
+            logger.error(f"Google Sheets API error: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error bulk updating subscribers: {e}")
             raise
 
     def write_log(self, log_entry: LogRow) -> None:
