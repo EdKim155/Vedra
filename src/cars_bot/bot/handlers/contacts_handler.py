@@ -12,7 +12,10 @@ from aiogram.types import CallbackQuery
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cars_bot.bot.keyboards.inline_keyboards import get_subscription_keyboard
+from cars_bot.bot.keyboards.inline_keyboards import (
+    get_seller_contacts_keyboard,
+    get_subscription_keyboard,
+)
 from cars_bot.database.models.contact_request import ContactRequest
 from cars_bot.database.models.post import Post
 from cars_bot.database.models.subscription import Subscription
@@ -127,14 +130,15 @@ async def get_contacts_callback(
         await session.rollback()
         # Continue anyway - user should still get contacts
     
-    # Format contact information
-    contacts_text = _format_contacts(post)
+    # Format contact information and get keyboard
+    contacts_text, keyboard = _format_contacts_with_keyboard(post)
     
     # Send contacts to user via private message
     try:
         await callback.bot.send_message(
             chat_id=user.telegram_user_id,
             text=contacts_text,
+            reply_markup=keyboard,
             parse_mode="HTML",
             disable_web_page_preview=True
         )
@@ -154,6 +158,7 @@ async def get_contacts_callback(
         # If can't send to PM, try to show in current chat
         await callback.message.answer(
             text=contacts_text,
+            reply_markup=keyboard,
             parse_mode="HTML",
             disable_web_page_preview=True
         )
@@ -164,16 +169,18 @@ async def get_contacts_callback(
         )
 
 
-def _format_contacts(post: Post) -> str:
+def _format_contacts_with_keyboard(post: Post) -> tuple[str, object]:
     """
-    Format seller contact information for display.
+    Format seller contact information with inline keyboard.
     
     Args:
         post: Post model with seller_contact relationship
     
     Returns:
-        Formatted contact information text
+        Tuple of (formatted text, inline keyboard markup)
     """
+    from aiogram.types import InlineKeyboardMarkup
+    
     seller = post.seller_contact
     car = post.car_data
     
@@ -190,41 +197,54 @@ def _format_contacts(post: Post) -> str:
         f"🚗 <b>Объявление:</b> {car_desc}\n\n"
     )
     
+    # Add price if available
+    if car and car.price:
+        price_formatted = f"{car.price:,}".replace(",", " ")
+        contacts_text += f"💰 <b>Цена:</b> {price_formatted}₽\n\n"
+    
     # Add original message link
     if post.original_message_link:
-        contacts_text += f"📝 <b>Оригинальное объявление:</b>\n{post.original_message_link}\n\n"
+        contacts_text += f"📝 <a href='{post.original_message_link}'>Оригинальное объявление</a>\n\n"
     
-    # Add seller contacts
-    contacts_text += "<b>📞 Контакты:</b>\n"
+    # Main text
+    contacts_text += "<b>Связаться с продавцом:</b>\n"
     
-    has_contacts = False
+    # Check if we have any contacts to display
+    has_telegram = bool(seller.telegram_username)
+    has_phone = bool(seller.phone_number)
     
-    if seller.telegram_username:
-        contacts_text += f"• Telegram: @{seller.telegram_username}\n"
-        has_contacts = True
+    if has_telegram or has_phone:
+        contacts_text += "Нажмите на кнопку ниже для связи 👇"
+    else:
+        contacts_text += "❌ Контактная информация недоступна"
+        
+        # Add other contacts if available
+        if seller.other_contacts:
+            contacts_text += f"\n\n📝 Дополнительно:\n{seller.other_contacts}"
     
-    if seller.telegram_user_id:
-        # Create deep link to user
-        tg_link = f"tg://user?id={seller.telegram_user_id}"
-        contacts_text += f"• <a href='{tg_link}'>Написать в Telegram</a>\n"
-        has_contacts = True
+    # Create keyboard with contact buttons
+    keyboard = get_seller_contacts_keyboard(
+        telegram_username=seller.telegram_username,
+        phone_number=seller.phone_number
+    )
     
-    if seller.phone_number:
-        # Format phone number
-        phone = seller.phone_number.strip()
-        contacts_text += f"• Телефон: <code>{phone}</code>\n"
-        has_contacts = True
+    return contacts_text, keyboard
+
+
+def _format_contacts(post: Post) -> str:
+    """
+    Format seller contact information for display (text only, deprecated).
     
-    if seller.other_contacts:
-        contacts_text += f"• Другое: {seller.other_contacts}\n"
-        has_contacts = True
+    Use _format_contacts_with_keyboard instead for new implementations.
     
-    if not has_contacts:
-        contacts_text += "Контактная информация не указана\n"
+    Args:
+        post: Post model with seller_contact relationship
     
-    contacts_text += "\n💡 Свяжитесь с продавцом напрямую для получения деталей."
-    
-    return contacts_text
+    Returns:
+        Formatted contact information text
+    """
+    text, _ = _format_contacts_with_keyboard(post)
+    return text
 
 
 

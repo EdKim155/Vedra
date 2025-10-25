@@ -12,9 +12,10 @@ This module handles:
 Uses Pydantic for data validation and async SQLAlchemy for database operations.
 """
 
+import asyncio
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Dict, List, Optional
 
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -225,6 +226,9 @@ class MessageProcessor:
     
     def __init__(self):
         """Initialize message processor."""
+        # Buffers for media groups
+        self.pending_groups: Dict[int, List[Message]] = {}
+        self.group_timers: Dict[int, asyncio.Task] = {}
         logger.info("MessageProcessor initialized")
     
     async def process_message(
@@ -235,6 +239,9 @@ class MessageProcessor:
     ) -> Optional[Post]:
         """
         Process incoming Telegram message.
+        
+        Handles media groups by buffering messages with same grouped_id
+        and processing them together after 2 seconds.
         
         Args:
             message: Telethon Message object
@@ -248,6 +255,34 @@ class MessageProcessor:
             ValidationError: If message data is invalid
         """
         try:
+            # Check if message is part of a media group
+            grouped_id = getattr(message, 'grouped_id', None)
+            
+            if grouped_id:
+                # Add message to buffer
+                if grouped_id not in self.pending_groups:
+                    self.pending_groups[grouped_id] = []
+                
+                self.pending_groups[grouped_id].append(message)
+                
+                logger.debug(
+                    f"Buffered message {message.id} for media group {grouped_id} "
+                    f"(total: {len(self.pending_groups[grouped_id])})"
+                )
+                
+                # Cancel existing timer for this group
+                if grouped_id in self.group_timers:
+                    self.group_timers[grouped_id].cancel()
+                
+                # Start new timer to process group after 2 seconds
+                self.group_timers[grouped_id] = asyncio.create_task(
+                    self._process_media_group_after_delay(grouped_id, channel, session)
+                )
+                
+                # Don't return a post yet - it will be created when timer expires
+                return None
+            
+            # Single message (no grouped_id) - process normally
             # Extract message data
             message_data = await self._extract_message_data(message, channel)
             
@@ -274,8 +309,14 @@ class MessageProcessor:
             # Validate complete data
             validated_data = MessageData.model_validate(message_data.model_dump())
             
-            # Save to database
-            post = await self._save_to_database(validated_data, channel, session)
+            # Save to database (single message, no media group)
+            # Pass message_id in array for copy_messages compatibility
+            post = await self._save_to_database(
+                validated_data, 
+                channel, 
+                session,
+                message_ids=[message.id]  # Single message as array
+            )
             
             logger.info(
                 f"✅ Processed message {message.id} from {channel.channel_title}: "
@@ -289,6 +330,139 @@ class MessageProcessor:
                 f"Error processing message {message.id} from {channel.channel_title}: {e}",
                 exc_info=True
             )
+            return None
+    
+    async def _process_media_group_after_delay(
+        self,
+        grouped_id: int,
+        channel: Channel,
+        session: AsyncSession,
+    ) -> None:
+        """
+        Wait for 2 seconds then process all messages in media group.
+        
+        Args:
+            grouped_id: Telegram grouped_id
+            channel: Database Channel object
+            session: Database session
+        """
+        try:
+            # Wait 2 seconds for all messages in group to arrive
+            await asyncio.sleep(2)
+            
+            # Get buffered messages
+            messages = self.pending_groups.pop(grouped_id, [])
+            self.group_timers.pop(grouped_id, None)
+            
+            if not messages:
+                logger.warning(f"No messages found for media group {grouped_id}")
+                return
+            
+            logger.info(
+                f"Processing media group {grouped_id} with {len(messages)} messages"
+            )
+            
+            # Process the group
+            await self._process_media_group(messages, channel, session)
+            
+        except asyncio.CancelledError:
+            logger.debug(f"Timer cancelled for media group {grouped_id}")
+            raise
+        except Exception as e:
+            logger.error(
+                f"Error processing media group {grouped_id}: {e}",
+                exc_info=True
+            )
+    
+    async def _process_media_group(
+        self,
+        messages: List[Message],
+        channel: Channel,
+        session: AsyncSession,
+    ) -> Optional[Post]:
+        """
+        Process a complete media group (multiple messages with same grouped_id).
+        
+        Args:
+            messages: List of messages in the group
+            channel: Database Channel object
+            session: Database session
+        
+        Returns:
+            Created Post object or None if group should be skipped
+        """
+        try:
+            if not messages:
+                return None
+            
+            # Use first message for text and metadata
+            first_message = messages[0]
+            
+            # Extract message data from first message
+            message_data = await self._extract_message_data(first_message, channel)
+            
+            if not message_data:
+                logger.debug(f"Skipping media group: failed to extract data")
+                return None
+            
+            # Check for duplicate (using first message ID)
+            if await self._is_duplicate(message_data, channel, session):
+                logger.debug(
+                    f"Duplicate media group from channel {channel.channel_title}"
+                )
+                return None
+            
+            # Apply keyword filters
+            if not self._check_keywords(message_data.text, channel.keywords):
+                logger.debug("Media group doesn't match keywords, skipping")
+                return None
+            
+            # Extract contacts from first message
+            contacts = await self._extract_contacts(first_message)
+            message_data.contacts = contacts
+            
+            # Collect ALL media from ALL messages in group
+            all_file_ids = []
+            all_message_ids = []
+            
+            for msg in messages:
+                all_message_ids.append(msg.id)
+                
+                # Extract media from each message
+                media_info = self._extract_media_info(msg)
+                if media_info.file_ids:
+                    all_file_ids.extend(media_info.file_ids)
+            
+            # Update message_data with all media
+            message_data.media.file_ids = all_file_ids
+            message_data.media.media_group_id = first_message.grouped_id
+            
+            logger.info(
+                f"Collected {len(all_file_ids)} media files from "
+                f"{len(messages)} messages in group"
+            )
+            
+            # Validate complete data
+            validated_data = MessageData.model_validate(message_data.model_dump())
+            
+            # Save to database with media group info
+            post = await self._save_to_database(
+                validated_data,
+                channel,
+                session,
+                media_group_id=first_message.grouped_id,
+                message_ids=all_message_ids
+            )
+            
+            logger.info(
+                f"✅ Processed media group {first_message.grouped_id} from "
+                f"{channel.channel_title}: Post ID={post.id}"
+            )
+            
+            return post
+            
+        except Exception as e:
+            logger.error(f"Error processing media group: {e}", exc_info=True)
             return None
     
     async def _extract_message_data(
@@ -553,6 +727,8 @@ class MessageProcessor:
         message_data: MessageData,
         channel: Channel,
         session: AsyncSession,
+        media_group_id: Optional[int] = None,
+        message_ids: Optional[List[int]] = None,
     ) -> Post:
         """
         Save processed message to database.
@@ -565,6 +741,8 @@ class MessageProcessor:
             message_data: Validated message data
             channel: Database Channel object
             session: Database session
+            media_group_id: Optional Telegram grouped_id for media groups
+            message_ids: Optional list of all message_id in media group
         
         Returns:
             Created Post object
@@ -576,6 +754,8 @@ class MessageProcessor:
             original_message_link=message_data.message_link,
             original_text=message_data.text,
             media_files=message_data.media.file_ids if message_data.media.file_ids else None,
+            media_group_id=media_group_id,
+            message_ids=message_ids,
             date_found=message_data.date,
             is_selling_post=None,  # Will be determined by AI
             confidence_score=None,
@@ -607,9 +787,14 @@ class MessageProcessor:
             f"(channel={channel.channel_title}, message={message_data.message_id})"
         )
         
-        # TODO: Send to AI processing queue (Celery task)
-        # from cars_bot.tasks import process_post_task
-        # process_post_task.delay(post.id)
+        # Send to AI processing queue (Celery task)
+        try:
+            from cars_bot.tasks import process_post_task
+            
+            task = process_post_task.apply_async(args=[post.id], countdown=2)
+            logger.info(f"📤 Queued post {post.id} for AI processing (task_id={task.id})")
+        except Exception as e:
+            logger.error(f"Failed to queue post {post.id} for processing: {e}", exc_info=True)
         
         return post
 

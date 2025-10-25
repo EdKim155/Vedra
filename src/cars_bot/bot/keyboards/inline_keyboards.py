@@ -191,4 +191,44 @@ def get_confirm_keyboard(action: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_seller_contacts_keyboard(
+    telegram_username: Optional[str] = None,
+    phone_number: Optional[str] = None
+) -> InlineKeyboardMarkup:
+    """
+    Get inline keyboard with seller contact buttons.
+    
+    Args:
+        telegram_username: Telegram username (with or without @)
+        phone_number: Phone number
+    
+    Returns:
+        InlineKeyboardMarkup with contact buttons
+    """
+    builder = InlineKeyboardBuilder()
+    
+    # Add Telegram button if username is provided
+    if telegram_username:
+        # Remove @ if present
+        username = telegram_username.lstrip('@')
+        builder.button(
+            text="💬 Написать в Telegram",
+            url=f"https://t.me/{username}"
+        )
+    
+    # Add phone button if number is provided
+    if phone_number:
+        # Clean phone number for display
+        clean_phone = phone_number.replace('+', '').replace('-', '').replace(' ', '')
+        builder.button(
+            text=f"📞 {phone_number}",
+            url=f"tel:{clean_phone}"
+        )
+    
+    # Arrange buttons vertically (one per row)
+    builder.adjust(1)
+    
+    return builder.as_markup()
+
+
 

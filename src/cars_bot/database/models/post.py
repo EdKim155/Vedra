@@ -5,7 +5,7 @@ Post model for storing processed Telegram messages.
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, String, Text, JSON
+from sqlalchemy import BigInteger, Boolean, Float, ForeignKey, Index, Integer, String, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from cars_bot.database.base import Base, ReprMixin, TimestampMixin
@@ -65,6 +65,18 @@ class Post(Base, TimestampMixin, ReprMixin):
         JSON,
         nullable=True,
         comment="List of Telegram file_id for photos/media"
+    )
+
+    media_group_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        nullable=True,
+        comment="Telegram grouped_id for media groups (albums)"
+    )
+
+    message_ids: Mapped[Optional[list[int]]] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="All message_id from media group"
     )
 
     # AI Classification
