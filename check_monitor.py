@@ -4,6 +4,11 @@
 import asyncio
 import sys
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+env_path = Path(__file__).parent / ".env"
+load_dotenv(env_path)
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -23,7 +28,7 @@ async def main():
     
     # Initialize database
     settings = get_settings()
-    await init_database()
+    init_database(str(settings.database.url))
     
     db_manager = get_db_manager()
     

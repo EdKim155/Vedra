@@ -371,14 +371,32 @@ class MessageProcessor:
         # Get media group ID if present
         media_group_id = getattr(message, 'grouped_id', None)
         
-        # Extract file IDs for photos
+        # Extract file IDs for photos and videos
+        # Format: type:id:access_hash:file_reference (hex encoded)
         file_ids = []
+        
         if has_photo and hasattr(message.media, 'photo'):
-            # Get the largest photo size (highest quality)
             photo = message.media.photo
             if hasattr(photo, 'id'):
-                # Store photo ID and access_hash for later retrieval
-                file_ids.append(f"photo:{photo.id}:{getattr(photo, 'access_hash', 0)}")
+                # Get file_reference for aiogram compatibility
+                file_ref = getattr(photo, 'file_reference', b'')
+                file_ref_hex = file_ref.hex() if file_ref else ''
+                access_hash = getattr(photo, 'access_hash', 0)
+                file_ids.append(f"photo:{photo.id}:{access_hash}:{file_ref_hex}")
+        
+        elif has_document and hasattr(message.media, 'document'):
+            doc = message.media.document
+            if hasattr(doc, 'id'):
+                # Check if it's a video
+                mime_type = getattr(doc, 'mime_type', '')
+                file_ref = getattr(doc, 'file_reference', b'')
+                file_ref_hex = file_ref.hex() if file_ref else ''
+                access_hash = getattr(doc, 'access_hash', 0)
+                
+                if mime_type.startswith('video/'):
+                    file_ids.append(f"video:{doc.id}:{access_hash}:{file_ref_hex}")
+                else:
+                    file_ids.append(f"document:{doc.id}:{access_hash}:{file_ref_hex}")
         
         return MediaInfo(
             has_photo=has_photo,
