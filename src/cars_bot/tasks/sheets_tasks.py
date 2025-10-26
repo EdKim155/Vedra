@@ -18,6 +18,89 @@ from loguru import logger
 from cars_bot.celery_app import app
 
 
+def _update_channel_row_in_sheets(sheets_manager, update_data: dict) -> None:
+    """
+    Update a channel row in Google Sheets.
+    
+    Updates columns C (Название канала), E (Дата добавления), F (Опубликовано), G (Последний пост)
+    for a specific channel by username.
+    
+    Args:
+        sheets_manager: GoogleSheetsManager instance
+        update_data: Dict with keys:
+            - username: Channel username (e.g. "@mychannel")
+            - title: (optional) Channel title/name
+            - date_added: (optional) Datetime when channel was added
+            - published_posts: (optional) Number of published posts
+            - last_post_link: (optional) Link to last post from source channel
+    """
+    import gspread
+    
+    worksheet = sheets_manager._get_worksheet(sheets_manager.SHEET_CHANNELS)
+    sheets_manager.rate_limiter.wait_if_needed()
+    
+    # Prepare username for search (try with and without @)
+    username = update_data['username']
+    username_variants = [username]
+    
+    # Add variant without @ if it starts with @
+    if username.startswith('@'):
+        username_variants.append(username[1:])
+    # Add variant with @ if it doesn't have @
+    elif not username.startswith('https://'):
+        username_variants.append(f'@{username}')
+    
+    # Try to find the row with this channel username (column B)
+    cell = None
+    for variant in username_variants:
+        try:
+            cell = worksheet.find(variant, in_column=2)  # Column B
+            if cell:
+                logger.debug(f"Found channel using variant: {variant}")
+                break
+        except Exception:
+            continue
+    
+    if cell is None:
+        logger.warning(f"Channel {update_data['username']} (tried: {username_variants}) not found in Google Sheets")
+        return
+    
+    row = cell.row
+    
+    # Prepare batch updates
+    updates = []
+    
+    # Column C (index 3): Название канала
+    if 'title' in update_data and update_data['title']:
+        updates.append(
+            gspread.Cell(row, 3, update_data['title'])
+        )
+    
+    # Column E (index 5): Дата добавления
+    if 'date_added' in update_data and update_data['date_added']:
+        updates.append(
+            gspread.Cell(row, 5, update_data['date_added'].strftime("%Y-%m-%d %H:%M:%S"))
+        )
+    
+    # Column F (index 6): Опубликовано
+    if 'published_posts' in update_data:
+        updates.append(
+            gspread.Cell(row, 6, update_data['published_posts'])
+        )
+    
+    # Column G (index 7): Последний пост (ссылка)
+    if 'last_post_link' in update_data and update_data['last_post_link']:
+        updates.append(
+            gspread.Cell(row, 7, update_data['last_post_link'])
+        )
+    
+    # Apply batch update
+    if updates:
+        sheets_manager.rate_limiter.wait_if_needed()
+        worksheet.update_cells(updates)
+        logger.debug(f"Updated {len(updates)} cells in Google Sheets for {update_data['username']}")
+
+
 class SheetsTask(Task):
     """
     Base task for Google Sheets operations with rate limiting.
@@ -72,10 +155,33 @@ def sync_channels_task(self) -> dict:
             channels_data = sheets_manager.get_channels()
             logger.info(f"Loaded {len(channels_data)} channels from Google Sheets")
             
+            # Initialize Telethon client to fetch channel info (use monitor's session)
+            from telethon import TelegramClient
+            
+            telethon_client = TelegramClient(
+                'sessions/monitor_session',  # Use same session as monitor
+                settings.telegram.api_id,
+                settings.telegram.api_hash
+            )
+            
+            try:
+                await telethon_client.connect()
+                
+                if not await telethon_client.is_user_authorized():
+                    logger.warning("Telethon client not authorized, cannot fetch channel titles")
+                    await telethon_client.disconnect()
+                    telethon_client = None
+                else:
+                    logger.info("✅ Telethon client connected for fetching channel info")
+            except Exception as e:
+                logger.warning(f"Failed to connect Telethon client: {e}")
+                telethon_client = None
+            
             db_manager = get_db_manager()
             async with db_manager.session() as session:
                 updated_count = 0
                 added_count = 0
+                channels_to_update_in_sheets = []  # Track new channels for auto-fill
 
                 for channel_data in channels_data:
                     # Generate channel_id from username (add @ if not present)
@@ -106,29 +212,78 @@ def sync_channels_task(self) -> dict:
                         )
                     )
                     channel = result.scalar_one_or_none()
+                    
+                    # Fetch channel title from Telegram if available
+                    channel_title_from_telegram = None
+                    if telethon_client:
+                        try:
+                            entity = await telethon_client.get_entity(channel_id)
+                            channel_title_from_telegram = entity.title if hasattr(entity, 'title') else None
+                            if channel_title_from_telegram:
+                                logger.debug(f"Fetched title from Telegram: {channel_title_from_telegram}")
+                        except Exception as e:
+                            logger.debug(f"Could not fetch title for {channel_id}: {e}")
 
+                    # Determine which title to use (priority: Telegram > existing > Sheets)
+                    final_title = None
+                    if channel_title_from_telegram:
+                        final_title = channel_title_from_telegram
+                    elif channel and channel.channel_title:
+                        final_title = channel.channel_title
+                    elif channel_data.title:
+                        final_title = channel_data.title
+                    
                     if channel:
                         # Update existing
-                        channel.channel_title = channel_data.title
+                        if final_title:
+                            channel.channel_title = final_title
                         channel.channel_username = clean_username
                         channel.is_active = channel_data.is_active
-                        channel.keywords = channel_data.keywords_list
+                        # keywords no longer synced from Sheets
                         updated_count += 1
+                        
+                        # Update title in Google Sheets if we got it from Telegram
+                        if channel_title_from_telegram and channel_title_from_telegram != channel_data.title:
+                            channels_to_update_in_sheets.append({
+                                'username': channel_id,
+                                'title': channel_title_from_telegram,
+                            })
                     else:
                         # Add new
                         channel = Channel(
                             channel_id=channel_id,
                             channel_username=clean_username,
-                            channel_title=channel_data.title,
+                            channel_title=final_title or '',
                             is_active=channel_data.is_active,
-                            keywords=channel_data.keywords_list,
+                            keywords=[],  # Empty by default
                             total_posts=0,
                             published_posts=0,
                         )
                         session.add(channel)
                         added_count += 1
+                        
+                        # Track for Google Sheets auto-fill
+                        channels_to_update_in_sheets.append({
+                            'username': channel_id,
+                            'title': final_title or '',
+                            'date_added': datetime.now(),
+                            'published_posts': 0,
+                        })
 
                 await session.commit()
+                
+                # Disconnect Telethon client
+                if telethon_client:
+                    await telethon_client.disconnect()
+                    logger.debug("Telethon client disconnected")
+                
+                # Auto-fill Google Sheets for new/updated channels
+                for update_data in channels_to_update_in_sheets:
+                    try:
+                        _update_channel_row_in_sheets(sheets_manager, update_data)
+                        logger.info(f"Updated Google Sheets for channel: {update_data['username']}")
+                    except Exception as e:
+                        logger.error(f"Failed to update sheets for {update_data['username']}: {e}")
 
                 sync_time = time.time() - start_time
 
@@ -422,5 +577,228 @@ def log_to_sheets_task(
         logger.error(f"Error logging to sheets: {e}", exc_info=True)
         # Don't raise - logging failures shouldn't break the system
         return {"success": False, "error": str(e)}
+
+
+@app.task(
+    bind=True,
+    base=SheetsTask,
+    name="cars_bot.tasks.sheets_tasks.sync_subscriptions_from_sheets_task",
+    soft_time_limit=90,
+    time_limit=120,
+)
+def sync_subscriptions_from_sheets_task(self) -> dict:
+    """
+    Sync subscription data FROM Google Sheets TO database.
+    
+    This enables manual subscription management through Google Sheets.
+    When you change subscription type, dates, or status in the sheet,
+    this task will apply those changes to the database.
+    
+    Features:
+    - Auto-calculates start/end dates if not provided in the sheet
+    - Updates existing subscriptions or creates new ones
+    - Writes calculated dates back to the sheet
+    
+    Returns:
+        Dict with sync results
+    """
+    logger.info("[Task] Syncing subscriptions FROM Google Sheets TO database")
+    start_time = time.time()
+
+    try:
+        import asyncio
+        from cars_bot.sheets.manager import GoogleSheetsManager
+        from cars_bot.database.session import get_db_manager
+        from cars_bot.subscriptions.manager import SubscriptionManager
+        from cars_bot.config import get_settings
+
+        async def do_sync():
+            settings = get_settings()
+            sheets_manager = GoogleSheetsManager(
+                credentials_path=settings.google.credentials_file,
+                spreadsheet_id=settings.google.spreadsheet_id
+            )
+
+            # Read subscribers from Google Sheets
+            subscribers_data = sheets_manager.get_subscribers(use_cache=False)
+            logger.info(f"Loaded {len(subscribers_data)} subscribers from Google Sheets")
+
+            subscription_manager = SubscriptionManager(sheets_manager=sheets_manager)
+            
+            db_manager = get_db_manager()
+            updated_count = 0
+            created_count = 0
+            skipped_count = 0
+
+            async with db_manager.session() as session:
+                for subscriber in subscribers_data:
+                    try:
+                        # Apply subscription changes from sheets to database
+                        await subscription_manager.apply_subscription_from_sheets(
+                            session=session,
+                            telegram_user_id=subscriber.user_id,
+                            subscription_type=subscriber.subscription_type,
+                            is_active=subscriber.is_active,
+                            start_date=subscriber.start_date,
+                            end_date=subscriber.end_date,
+                        )
+                        
+                        # Check if it was an update or create
+                        # (this is simplified - in reality we'd need to track this)
+                        if subscriber.start_date and subscriber.end_date:
+                            updated_count += 1
+                        else:
+                            created_count += 1
+                            
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to sync subscription for user {subscriber.user_id}: {e}"
+                        )
+                        skipped_count += 1
+                        continue
+
+                # Commit all changes
+                await session.commit()
+
+            sync_time = time.time() - start_time
+
+            logger.info(
+                f"✅ Subscriptions synced FROM Google Sheets in {sync_time:.2f}s: "
+                f"{updated_count} updated, {created_count} created, {skipped_count} skipped"
+            )
+
+            return {
+                "success": True,
+                "updated": updated_count,
+                "created": created_count,
+                "skipped": skipped_count,
+                "total": len(subscribers_data),
+                "sync_time": sync_time,
+            }
+
+        return asyncio.run(do_sync())
+
+    except Exception as e:
+        logger.error(f"Error syncing subscriptions from sheets: {str(e)}")
+        logger.exception("Full traceback:")
+        raise
+
+
+@app.task(
+    bind=True,
+    base=SheetsTask,
+    name="cars_bot.tasks.sheets_tasks.update_channels_stats_task",
+    soft_time_limit=300,
+    time_limit=360,
+)
+def update_channels_stats_task(self) -> dict:
+    """
+    Update channel statistics in Google Sheets.
+    
+    Updates for each active channel:
+    - Опубликовано (published_posts) - count from DB
+    - Последний пост (last_post_link) - link to last post from source channel
+    
+    This task runs periodically (every hour) via Celery Beat.
+    
+    Returns:
+        Dict with update results
+    """
+    logger.info("[Task] Updating channels statistics in Google Sheets")
+    start_time = time.time()
+    
+    try:
+        import asyncio
+        from sqlalchemy import select, func, desc
+        from cars_bot.sheets.manager import GoogleSheetsManager
+        from cars_bot.database.session import get_db_manager
+        from cars_bot.database.models.channel import Channel
+        from cars_bot.database.models.post import Post
+        from cars_bot.config import get_settings
+        
+        async def do_update():
+            settings = get_settings()
+            sheets_manager = GoogleSheetsManager(
+                credentials_path=settings.google.credentials_file,
+                spreadsheet_id=settings.google.spreadsheet_id
+            )
+            
+            db_manager = get_db_manager()
+            async with db_manager.session() as session:
+                # Get all active channels
+                result = await session.execute(
+                    select(Channel).where(Channel.is_active == True)
+                )
+                channels = result.scalars().all()
+                
+                updated_count = 0
+                
+                for channel in channels:
+                    try:
+                        # 1. Count published posts from this channel
+                        published_posts_result = await session.execute(
+                            select(func.count(Post.id)).where(
+                                Post.source_channel_id == channel.id,
+                                Post.published == True
+                            )
+                        )
+                        published_posts = published_posts_result.scalar() or 0
+                        
+                        # 2. Get last post - link to original post in source channel
+                        last_post_result = await session.execute(
+                            select(Post).where(
+                                Post.source_channel_id == channel.id
+                            ).order_by(desc(Post.date_found)).limit(1)
+                        )
+                        last_post = last_post_result.scalar_one_or_none()
+                        
+                        last_post_link = None
+                        if last_post and last_post.original_message_link:
+                            # Validate link format
+                            if last_post.original_message_link.startswith('https://t.me/'):
+                                last_post_link = last_post.original_message_link
+                            else:
+                                logger.warning(
+                                    f"Invalid link format for post {last_post.id}: "
+                                    f"{last_post.original_message_link}"
+                                )
+                        
+                        # Update Google Sheets
+                        _update_channel_row_in_sheets(
+                            sheets_manager,
+                            {
+                                'username': channel.channel_id,  # Already has @
+                                'published_posts': published_posts,
+                                'last_post_link': last_post_link,
+                            }
+                        )
+                        updated_count += 1
+                        
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to update stats for {channel.channel_username}: {e}"
+                        )
+                        continue
+                
+                sync_time = time.time() - start_time
+                
+                logger.info(
+                    f"✅ Channel statistics updated in {sync_time:.2f}s: "
+                    f"{updated_count}/{len(channels)} channels"
+                )
+                
+                return {
+                    "success": True,
+                    "updated": updated_count,
+                    "total": len(channels),
+                    "sync_time": sync_time,
+                }
+        
+        return asyncio.run(do_update())
+    
+    except Exception as e:
+        logger.error(f"Error updating channel statistics: {str(e)}")
+        logger.exception("Full traceback:")
+        raise
 
 

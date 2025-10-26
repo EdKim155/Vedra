@@ -23,6 +23,7 @@ from cars_bot.sheets.models import (
     LogRow,
     QueueRow,
     SubscriberRow,
+    SubscriptionTypeEnum,
 )
 
 logger = logging.getLogger(__name__)
@@ -274,15 +275,24 @@ class GoogleSheetsManager:
                     # Convert TRUE/FALSE strings to boolean
                     if isinstance(record.get("Активен"), str):
                         record["Активен"] = record["Активен"].upper() == "TRUE"
+                    
+                    # Parse date_added if present
+                    date_added = None
+                    date_added_str = record.get("Дата добавления", "")
+                    if date_added_str and date_added_str.strip():
+                        try:
+                            date_added = datetime.strptime(date_added_str, "%Y-%m-%d %H:%M:%S")
+                        except (ValueError, TypeError):
+                            logger.debug(f"Could not parse date_added: {date_added_str}")
 
                     channel = ChannelRow(
                         id=record.get("ID"),
                         username=username,
                         title=record.get("Название канала", ""),
                         is_active=record.get("Активен", True),
-                        keywords=record.get("Ключевые слова"),
-                        total_posts=int(record.get("Всего постов", 0) or 0),
+                        date_added=date_added,
                         published_posts=int(record.get("Опубликовано", 0) or 0),
+                        last_post_link=record.get("Последний пост"),
                     )
                     channels.append(channel)
                 except Exception as e:
@@ -362,6 +372,123 @@ class GoogleSheetsManager:
             raise
         except Exception as e:
             logger.error(f"Error reading filter settings: {e}")
+            raise
+
+    def get_subscribers(self, use_cache: bool = True) -> list[SubscriberRow]:
+        """
+        Get list of subscribers from Google Sheets.
+
+        Args:
+            use_cache: Whether to use cached data
+
+        Returns:
+            List of subscriber data
+        """
+        cache_key = "subscribers"
+
+        if use_cache:
+            cached = self._get_cached(cache_key)
+            if cached is not None:
+                return cached
+
+        try:
+            worksheet = self._get_worksheet(self.SHEET_SUBSCRIBERS)
+            self.rate_limiter.wait_if_needed()
+
+            # Get all records (skip header row)
+            records = worksheet.get_all_records()
+
+            subscribers = []
+            for record in records:
+                try:
+                    # Get user_id and validate it's not empty
+                    user_id = record.get("User ID", "")
+                    if not user_id or str(user_id).strip() == "":
+                        logger.warning(
+                            f"Skipping subscriber row with empty user_id: {record}"
+                        )
+                        continue
+
+                    # Convert TRUE/FALSE strings to boolean
+                    if isinstance(record.get("Активна"), str):
+                        record["Активна"] = record["Активна"].upper() == "TRUE"
+
+                    # Parse subscription type
+                    sub_type_str = str(record.get("Тип подписки", "FREE")).upper()
+                    try:
+                        subscription_type = SubscriptionTypeEnum(sub_type_str)
+                    except ValueError:
+                        logger.warning(
+                            f"Invalid subscription type '{sub_type_str}' for user {user_id}, "
+                            f"defaulting to FREE"
+                        )
+                        subscription_type = SubscriptionTypeEnum.FREE
+
+                    # Parse dates
+                    start_date = None
+                    start_date_str = record.get("Дата начала", "")
+                    if start_date_str and str(start_date_str).strip():
+                        try:
+                            start_date = datetime.strptime(
+                                str(start_date_str), "%Y-%m-%d %H:%M:%S"
+                            )
+                        except (ValueError, TypeError):
+                            logger.debug(f"Could not parse start_date: {start_date_str}")
+
+                    end_date = None
+                    end_date_str = record.get("Дата окончания", "")
+                    if end_date_str and str(end_date_str).strip():
+                        try:
+                            end_date = datetime.strptime(
+                                str(end_date_str), "%Y-%m-%d %H:%M:%S"
+                            )
+                        except (ValueError, TypeError):
+                            logger.debug(f"Could not parse end_date: {end_date_str}")
+
+                    registration_date = None
+                    registration_date_str = record.get("Дата регистрации", "")
+                    if registration_date_str and str(registration_date_str).strip():
+                        try:
+                            registration_date = datetime.strptime(
+                                str(registration_date_str), "%Y-%m-%d %H:%M:%S"
+                            )
+                        except (ValueError, TypeError):
+                            logger.debug(
+                                f"Could not parse registration_date: {registration_date_str}"
+                            )
+
+                    # If no registration date, use current time
+                    if not registration_date:
+                        registration_date = datetime.utcnow()
+
+                    subscriber = SubscriberRow(
+                        user_id=int(user_id),
+                        username=record.get("Username", ""),
+                        name=record.get("Имя", ""),
+                        subscription_type=subscription_type,
+                        is_active=record.get("Активна", True),
+                        start_date=start_date,
+                        end_date=end_date,
+                        registration_date=registration_date,
+                        contact_requests=int(record.get("Запросов контактов", 0) or 0),
+                    )
+                    subscribers.append(subscriber)
+                except Exception as e:
+                    logger.error(f"Error parsing subscriber row: {record}. Error: {e}")
+                    continue
+
+            logger.info(f"Loaded {len(subscribers)} subscribers from Google Sheets")
+
+            # Cache the results (shorter TTL for subscribers as they change more often)
+            self._set_cache(cache_key, subscribers, ttl=30)
+
+            return subscribers
+
+        except APIError as e:
+            logger.error(f"Google Sheets API error: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error reading subscribers: {e}")
             raise
 
     # =========================================================================
@@ -474,6 +601,7 @@ class GoogleSheetsManager:
         user_id: int,
         subscription_type: Optional[str] = None,
         is_active: Optional[bool] = None,
+        start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
     ) -> None:
         """
@@ -483,6 +611,7 @@ class GoogleSheetsManager:
             user_id: Telegram user ID
             subscription_type: New subscription type
             is_active: New active status
+            start_date: New start date
             end_date: New end date
         """
         try:
@@ -506,6 +635,10 @@ class GoogleSheetsManager:
                 updates.append(
                     gspread.Cell(row, 5, "TRUE" if is_active else "FALSE")  # Column E
                 )
+            if start_date is not None:
+                updates.append(
+                    gspread.Cell(row, 6, start_date.strftime("%Y-%m-%d %H:%M:%S"))
+                )  # Column F
             if end_date is not None:
                 updates.append(
                     gspread.Cell(row, 7, end_date.strftime("%Y-%m-%d %H:%M:%S"))

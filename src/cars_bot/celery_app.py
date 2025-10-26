@@ -167,6 +167,16 @@ app.conf.task_routes = {
         "routing_key": "sheets.sync",
         "priority": 2,
     },
+    "cars_bot.tasks.sheets_tasks.update_channels_stats_task": {
+        "queue": "sheets_sync",
+        "routing_key": "sheets.sync",
+        "priority": 2,
+    },
+    "cars_bot.tasks.sheets_tasks.sync_subscriptions_from_sheets_task": {
+        "queue": "sheets_sync",
+        "routing_key": "sheets.sync",
+        "priority": 3,  # Higher priority - affects user access
+    },
     # Monitoring tasks
     "cars_bot.tasks.monitoring_tasks.check_subscriptions_task": {
         "queue": "monitoring",
@@ -249,13 +259,22 @@ app.conf.beat_schedule = {
             "priority": 3,
         },
     },
-    # Sync subscribers data every 5 minutes
-    "sync-subscribers-every-5-min": {
+    # Sync subscribers TO Google Sheets every 5 minutes
+    "sync-subscribers-to-sheets-every-5-min": {
         "task": "cars_bot.tasks.sheets_tasks.sync_subscribers_task",
         "schedule": timedelta(minutes=5),
         "options": {
             "queue": "sheets_sync",
             "priority": 2,
+        },
+    },
+    # Sync subscriptions FROM Google Sheets every 2 minutes (faster for manual management)
+    "sync-subscriptions-from-sheets-every-2-min": {
+        "task": "cars_bot.tasks.sheets_tasks.sync_subscriptions_from_sheets_task",
+        "schedule": timedelta(minutes=2),
+        "options": {
+            "queue": "sheets_sync",
+            "priority": 3,
         },
     },
     # Update analytics every hour
@@ -265,6 +284,15 @@ app.conf.beat_schedule = {
         "options": {
             "queue": "sheets_sync",
             "priority": 1,
+        },
+    },
+    # Update channels statistics every hour (at :05 to avoid collision with analytics)
+    "update-channels-stats-hourly": {
+        "task": "cars_bot.tasks.sheets_tasks.update_channels_stats_task",
+        "schedule": crontab(minute=5),  # Every hour at :05
+        "options": {
+            "queue": "sheets_sync",
+            "priority": 2,
         },
     },
     # Check expired subscriptions daily at 00:00

@@ -417,6 +417,138 @@ class SubscriptionManager:
             logger.error(f"Error getting subscriptions for user {user_id}: {e}")
             return []
 
+    async def apply_subscription_from_sheets(
+        self,
+        session: AsyncSession,
+        telegram_user_id: int,
+        subscription_type: SubscriptionType,
+        is_active: bool,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> None:
+        """
+        Apply subscription changes from Google Sheets to database.
+        
+        This method is used for manual subscription management through Google Sheets.
+        It automatically calculates start/end dates if not provided.
+
+        Args:
+            session: Database session
+            telegram_user_id: Telegram user ID
+            subscription_type: Type of subscription
+            is_active: Whether subscription is active
+            start_date: Optional start date (auto-calculated if None)
+            end_date: Optional end date (auto-calculated if None)
+
+        Raises:
+            SubscriptionError: If update fails
+        """
+        try:
+            # Get user by telegram_user_id
+            stmt = select(User).where(User.telegram_user_id == telegram_user_id)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+
+            if not user:
+                logger.warning(
+                    f"User with telegram_user_id {telegram_user_id} not found, "
+                    f"cannot apply subscription from sheets"
+                )
+                return
+
+            # Get current active subscription
+            sub_stmt = (
+                select(Subscription)
+                .where(
+                    Subscription.user_id == user.id,
+                    Subscription.is_active == True,
+                )
+                .order_by(Subscription.end_date.desc())
+                .limit(1)
+            )
+            result = await session.execute(sub_stmt)
+            current_subscription = result.scalar_one_or_none()
+
+            # Auto-calculate dates if not provided
+            if not start_date:
+                start_date = datetime.utcnow()
+            
+            if not end_date:
+                duration = self.SUBSCRIPTION_DURATIONS.get(
+                    subscription_type, timedelta(days=30)
+                )
+                if subscription_type == SubscriptionType.FREE:
+                    end_date = start_date + timedelta(days=36500)  # ~100 years
+                else:
+                    end_date = start_date + duration
+
+            # Check if we need to create or update subscription
+            if current_subscription:
+                # Check if anything changed
+                needs_update = (
+                    current_subscription.subscription_type != subscription_type
+                    or current_subscription.is_active != is_active
+                    or (end_date and current_subscription.end_date != end_date)
+                    or (start_date and current_subscription.start_date != start_date)
+                )
+
+                if needs_update:
+                    # Update existing subscription
+                    current_subscription.subscription_type = subscription_type
+                    current_subscription.is_active = is_active
+                    current_subscription.start_date = start_date
+                    current_subscription.end_date = end_date
+
+                    logger.info(
+                        f"Updated subscription for user {telegram_user_id} "
+                        f"from Google Sheets: {subscription_type.value}, "
+                        f"active={is_active}, end_date={end_date}"
+                    )
+                else:
+                    logger.debug(
+                        f"No changes needed for subscription of user {telegram_user_id}"
+                    )
+            else:
+                # Create new subscription
+                subscription = Subscription(
+                    user_id=user.id,
+                    subscription_type=subscription_type,
+                    is_active=is_active,
+                    start_date=start_date,
+                    end_date=end_date,
+                    auto_renewal=False,  # Manual subscriptions don't auto-renew
+                )
+                session.add(subscription)
+
+                logger.info(
+                    f"Created new subscription for user {telegram_user_id} "
+                    f"from Google Sheets: {subscription_type.value}, "
+                    f"active={is_active}, end_date={end_date}"
+                )
+
+            await session.flush()
+
+            # Update Google Sheets with calculated dates (if they were auto-calculated)
+            if self.sheets_manager:
+                try:
+                    self.sheets_manager.update_subscriber_status(
+                        user_id=telegram_user_id,
+                        subscription_type=subscription_type.value,
+                        is_active=is_active,
+                        start_date=start_date,
+                        end_date=end_date,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to update Google Sheets with calculated dates: {e}")
+
+        except Exception as e:
+            logger.error(
+                f"Error applying subscription from sheets for user {telegram_user_id}: {e}"
+            )
+            raise SubscriptionError(
+                f"Failed to apply subscription from sheets: {e}"
+            ) from e
+
     # =========================================================================
     # PRIVATE HELPER METHODS
     # =========================================================================
@@ -472,6 +604,7 @@ class SubscriptionManager:
                 user_id=user.telegram_user_id,
                 subscription_type=subscription.subscription_type.value,
                 is_active=subscription.is_active,
+                start_date=subscription.start_date,
                 end_date=subscription.end_date,
             )
 
