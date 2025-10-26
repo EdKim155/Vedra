@@ -528,19 +528,6 @@ class SubscriptionManager:
 
             await session.flush()
 
-            # Update Google Sheets with calculated dates (if they were auto-calculated)
-            if self.sheets_manager:
-                try:
-                    self.sheets_manager.update_subscriber_status(
-                        user_id=telegram_user_id,
-                        subscription_type=subscription_type.value,
-                        is_active=is_active,
-                        start_date=start_date,
-                        end_date=end_date,
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to update Google Sheets with calculated dates: {e}")
-
         except Exception as e:
             logger.error(
                 f"Error applying subscription from sheets for user {telegram_user_id}: {e}"

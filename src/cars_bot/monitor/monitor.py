@@ -96,6 +96,16 @@ class ChannelMonitor:
         # Update task
         self._update_task: Optional[asyncio.Task] = None
         
+        # Watchdog task
+        self._watchdog_task: Optional[asyncio.Task] = None
+        
+        # Last event timestamp (for watchdog)
+        self.last_event_time: Optional[datetime] = None
+        
+        # Watchdog settings (Context7: Active catch_up on idle)
+        self.watchdog_interval = 60  # Check every 60 seconds
+        self.max_idle_time = 60  # Force catch_up if no events for 1 minute (ultra-fast zombie detection)
+        
         # Reconnect settings
         self.max_reconnect_attempts = 5
         self.reconnect_delay = 30  # seconds
@@ -127,13 +137,28 @@ class ChannelMonitor:
             # Register event handlers
             self._register_handlers()
             
+            # Catch up on missed updates (Context7 best practice)
+            try:
+                logger.info("📥 Catching up on missed updates...")
+                await self.client.catch_up()
+                logger.info("✅ Caught up on updates")
+            except Exception as e:
+                logger.warning(f"Could not catch up on updates: {e}")
+            
             # Start periodic channel update task
             self._update_task = asyncio.create_task(self._periodic_channel_update())
             
+            # Start connection watchdog task
+            self._watchdog_task = asyncio.create_task(self._connection_watchdog())
+            
             self.is_running = True
             logger.info("✅ Channel monitor started successfully")
+            logger.info(f"🐕 Watchdog enabled: ACTIVE mode with auto-recovery")
+            logger.info(f"📊 Will force catch_up() if idle > {self.max_idle_time}s to prevent zombie connections")
             
-            # Run until disconnected
+            # Run until disconnected (Context7 recommended approach)
+            # The watchdog will handle "zombie connections" 
+            # The auto-restart loop will handle crashes
             await self.client.run_until_disconnected()
             
         except Exception as e:
@@ -154,6 +179,14 @@ class ChannelMonitor:
             self._update_task.cancel()
             try:
                 await self._update_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Cancel watchdog task
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
             except asyncio.CancelledError:
                 pass
         
@@ -248,14 +281,15 @@ class ChannelMonitor:
             # Auto-subscribe to channel if not already subscribed
             await self._ensure_channel_subscription(entity)
             
-            # Store channel
-            channel_id = extract_channel_id(entity)
-            self.monitored_channels[channel_id] = channel
-            self.channel_entities[channel_id] = entity
+            # Store channel using NUMERIC ID as key (matches extract_channel_id)
+            numeric_channel_id = str(entity.id)
+            self.monitored_channels[numeric_channel_id] = channel
+            self.channel_entities[numeric_channel_id] = entity
             
             logger.info(
                 f"✅ Added channel: {entity.title} "
-                f"(@{entity.username if entity.username else channel_id})"
+                f"(@{entity.username if entity.username else 'N/A'}) "
+                f"[ID: {numeric_channel_id}]"
             )
             
         except ChannelPrivateError:
@@ -314,16 +348,30 @@ class ChannelMonitor:
             logger.info(f"Removed channel: {channel.channel_title}")
     
     def _register_handlers(self) -> None:
-        """Register Telethon event handlers."""
+        """
+        Register Telethon event handlers (Context7 best practice).
+        
+        CRITICAL: Don't re-register handlers on reconnect!
+        Handlers persist across reconnections in Telethon.
+        """
         logger.info("Registering event handlers...")
         
-        # Handler for new messages in ALL channels (filtering done in handler)
-        @self.client.on(events.NewMessage())
-        async def new_message_handler(event: events.NewMessage.Event) -> None:
-            """Handle new message in monitored channel."""
-            await self._handle_new_message(event)
+        # Check if handler already registered
+        try:
+            existing = self.client.list_event_handlers()
+            if existing:
+                logger.info(f"ℹ️  {len(existing)} handlers already registered, skipping")
+                return
+        except Exception as e:
+            logger.debug(f"Could not check existing handlers: {e}")
         
-        logger.info("✅ Event handlers registered")
+        # Add handler using add_event_handler (Context7 recommended)
+        self.client.add_event_handler(
+            self._handle_new_message,
+            events.NewMessage()
+        )
+        
+        logger.info("✅ Event handlers registered (total: 1)")
     
     async def _handle_new_message(self, event: events.NewMessage.Event) -> None:
         """
@@ -333,40 +381,50 @@ class ChannelMonitor:
             event: Telethon NewMessage event
         """
         try:
+            # Update watchdog timestamp (we received an event!)
+            self.last_event_time = datetime.now()
+            
             message: Message = event.message
             
             # Get channel info
             chat = await event.get_chat()
             
+            logger.debug(f"🔔 Received event from chat: {chat.__class__.__name__}, ID: {getattr(chat, 'id', 'N/A')}")
+            
             if not isinstance(chat, Channel):
+                logger.debug(f"⏭️  Skipping non-channel message (type: {chat.__class__.__name__})")
                 return  # Not a channel message
             
             channel_id = extract_channel_id(chat)
             
+            logger.debug(f"📍 Channel ID extracted: {channel_id}, monitored: {list(self.monitored_channels.keys())}")
+            
             # Check if channel is monitored
             if channel_id not in self.monitored_channels:
+                logger.debug(f"⏭️  Channel {channel_id} ({chat.title}) not in monitored list, skipping")
                 return
             
             db_channel = self.monitored_channels[channel_id]
             
             # Validate message
             if not is_valid_message(message):
-                logger.debug(f"Invalid message {message.id} from {chat.title}")
+                logger.info(f"⏭️  Invalid message {message.id} from {chat.title} (validation failed)")
                 return
             
             # Check for duplicates
             if self.deduplicator.is_duplicate(channel_id, message.id):
-                logger.debug(f"Duplicate message {message.id} from {chat.title}")
+                logger.debug(f"⏭️  Duplicate message {message.id} from {chat.title}")
                 return
             
             # Extract text
             text = extract_message_text(message)
+            logger.debug(f"📝 Extracted text ({len(text)} chars): {text[:100]}...")
             
             # Check keywords
             if not check_keywords(text, db_channel.keywords):
-                logger.debug(
-                    f"Message {message.id} from {chat.title} "
-                    "doesn't match keywords, skipping"
+                logger.info(
+                    f"⏭️  Message {message.id} from {chat.title} "
+                    f"doesn't match keywords {db_channel.keywords}, skipping"
                 )
                 return
             
@@ -460,20 +518,34 @@ class ChannelMonitor:
                     )
                     db_channels = result.scalars().all()
                     
-                    current_channel_ids = {ch.channel_id for ch in db_channels}
-                    monitored_channel_ids = set(self.monitored_channels.keys())
+                    # Build mapping: username -> DBChannel for comparison
+                    # Use username as stable identifier (channel_id in DB is username format)
+                    db_channels_by_username = {
+                        normalize_channel_username(ch.channel_username or ch.channel_id): ch
+                        for ch in db_channels
+                    }
                     
-                    # Find channels to add
-                    to_add = current_channel_ids - monitored_channel_ids
+                    # Build mapping: username -> numeric_id for monitored channels
+                    # We need to reverse-lookup username from stored DBChannel objects
+                    monitored_by_username = {}
+                    for numeric_id, db_channel in self.monitored_channels.items():
+                        username = normalize_channel_username(
+                            db_channel.channel_username or db_channel.channel_id
+                        )
+                        monitored_by_username[username] = numeric_id
                     
-                    # Find channels to remove
-                    to_remove = monitored_channel_ids - current_channel_ids
+                    current_usernames = set(db_channels_by_username.keys())
+                    monitored_usernames = set(monitored_by_username.keys())
+                    
+                    # Find channels to add (in DB but not monitored)
+                    to_add = current_usernames - monitored_usernames
+                    
+                    # Find channels to remove (monitored but not in DB)
+                    to_remove = monitored_usernames - current_usernames
                     
                     # Add new channels
-                    for channel_id in to_add:
-                        channel = next(
-                            ch for ch in db_channels if ch.channel_id == channel_id
-                        )
+                    for username in to_add:
+                        channel = db_channels_by_username[username]
                         try:
                             await self._add_channel(channel)
                         except Exception as e:
@@ -481,9 +553,10 @@ class ChannelMonitor:
                                 f"Failed to add channel {channel.channel_username}: {e}"
                             )
                     
-                    # Remove old channels
-                    for channel_id in to_remove:
-                        await self._remove_channel(channel_id)
+                    # Remove old channels (use numeric_id as key)
+                    for username in to_remove:
+                        numeric_id = monitored_by_username[username]
+                        await self._remove_channel(numeric_id)
                     
                     if to_add or to_remove:
                         logger.info(
@@ -495,50 +568,125 @@ class ChannelMonitor:
             except Exception as e:
                 logger.error(f"Error updating channels: {e}", exc_info=True)
     
+    async def _connection_watchdog(self) -> None:
+        """
+        Monitor connection health and FORCE catch_up on idle (Context7 solution).
+        
+        When idle detected:
+        1. Call catch_up() to force Telethon to check for missed updates
+        2. This "wakes up" zombie connections without full reconnect
+        3. Avoids "database is locked" error
+        
+        Context7: catch_up() is designed for this exact scenario!
+        """
+        logger.info(f"🐕 Connection watchdog started (interval: {self.watchdog_interval}s, active mode)")
+        logger.info(f"📊 Will force catch_up if idle > {self.max_idle_time}s")
+        
+        while self.is_running:
+            try:
+                await asyncio.sleep(self.watchdog_interval)
+                
+                # Skip check if we haven't received any events yet (startup phase)
+                if self.last_event_time is None:
+                    logger.debug("🐕 Watchdog: No events received yet (startup phase), skipping check")
+                    continue
+                
+                # Calculate idle time
+                now = datetime.now()
+                idle_seconds = (now - self.last_event_time).total_seconds()
+                
+                if idle_seconds > self.max_idle_time:
+                    logger.warning(
+                        f"⚠️  Zombie connection detected! Idle for {idle_seconds:.0f}s (max: {self.max_idle_time}s)"
+                    )
+                    logger.info("🔄 Forcing catch_up() to wake connection...")
+                    
+                    try:
+                        # Context7 solution: catch_up() forces update check
+                        # This wakes up zombie connections WITHOUT disconnect
+                        await self.client.catch_up()
+                        
+                        # Reset timestamp after catch_up
+                        self.last_event_time = datetime.now()
+                        logger.info("✅ Catch_up successful, connection should be alive")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Catch_up failed: {e}")
+                        logger.warning("🔄 Will retry on next watchdog cycle")
+                    
+                else:
+                    logger.debug(f"🐕 Watchdog: Connection healthy (idle: {idle_seconds:.0f}s)")
+                
+            except asyncio.CancelledError:
+                logger.info("🐕 Watchdog: Stopping...")
+                break
+            except Exception as e:
+                logger.error(f"🐕 Watchdog error: {e}", exc_info=True)
+                # Continue running even if watchdog encounters an error
+    
     async def reconnect(self) -> bool:
         """
-        Attempt to reconnect to Telegram.
+        Soft reconnection for "zombie" connections (Context7 approach).
+        
+        Triggers Telethon's internal reconnection WITHOUT calling disconnect()
+        on the client, which would terminate run_until_disconnected().
         
         Returns:
             True if reconnection successful
         """
-        for attempt in range(1, self.max_reconnect_attempts + 1):
-            try:
-                logger.info(
-                    f"Reconnection attempt {attempt}/{self.max_reconnect_attempts}..."
-                )
-                
-                # Disconnect if connected
-                if self.client.is_connected():
-                    await self.client.disconnect()
-                
-                # Wait before reconnecting
-                await asyncio.sleep(self.reconnect_delay)
-                
-                # Reconnect
-                await self._connect()
-                
-                # Reload channels
-                await self._load_channels()
-                
-                logger.info("✅ Reconnected successfully")
-                return True
-                
-            except Exception as e:
-                logger.error(f"Reconnection attempt {attempt} failed: {e}")
+        logger.info("🔄 Attempting soft reconnection...")
         
-        logger.error("❌ Failed to reconnect after maximum attempts")
-        return False
+        try:
+            # Method 1: Force disconnect only the internal sender
+            # This triggers Telethon's auto-reconnect without killing the event loop
+            if hasattr(self.client, '_sender') and self.client._sender:
+                logger.info("Resetting internal connection...")
+                try:
+                    # Disconnect sender (not client!)
+                    await self.client._sender.disconnect()
+                except Exception as e:
+                    logger.debug(f"Sender disconnect: {e}")
+            
+            # Wait for Telethon's auto-reconnection
+            await asyncio.sleep(5)
+            
+            # Method 2: If sender disconnect didn't work, try reconnecting directly
+            if not self.client.is_connected():
+                logger.warning("⚠️ Sender disconnect didn't trigger reconnect, trying direct connect...")
+                try:
+                    # Try to connect WITHOUT disconnecting first
+                    await self.client.connect()
+                except Exception as e:
+                    logger.debug(f"Direct connect: {e}")
+                
+                await asyncio.sleep(3)
+            
+            # Verify connection
+            if self.client.is_connected():
+                logger.info("✅ Connection restored")
+                
+                # NOTE: Handlers persist in Telethon, no need to re-register
+                # (Context7: Event handlers survive reconnections)
+                
+                return True
+            else:
+                logger.error("❌ Connection still down after reconnection attempts")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Reconnection error: {e}", exc_info=True)
+            return False
 
 
 async def run_monitor():
     """
-    Run channel monitor as standalone service.
+    Run channel monitor as standalone service with auto-restart.
     
     This is the main entry point for the monitoring service.
+    Automatically restarts the monitor if it crashes for any reason.
     """
     logger.info("="*60)
-    logger.info("TELEGRAM CHANNEL MONITOR")
+    logger.info("TELEGRAM CHANNEL MONITOR (with auto-restart)")
     logger.info("="*60)
     
     # Initialize settings
@@ -548,18 +696,49 @@ async def run_monitor():
     from cars_bot.database.session import init_database
     init_database(str(settings.database.url), echo=settings.app.debug)
     
-    # Create monitor
-    monitor = ChannelMonitor(settings)
+    restart_count = 0
+    max_restarts = 10  # Prevent infinite restart loop if there's a persistent error
+    restart_delay = 10  # seconds between restarts
     
-    try:
-        # Start monitoring
-        await monitor.start()
-    except KeyboardInterrupt:
-        logger.info("Received shutdown signal")
-    except Exception as e:
-        logger.error(f"Monitor error: {e}", exc_info=True)
-    finally:
-        await monitor.stop()
+    while restart_count < max_restarts:
+        try:
+            logger.info(f"🚀 Starting monitor (restart count: {restart_count})")
+            
+            # Create monitor
+            monitor = ChannelMonitor(settings)
+            
+            # Start monitoring
+            await monitor.start()
+            
+            # If we get here, monitor stopped gracefully
+            logger.info("Monitor stopped gracefully")
+            break  # Exit the restart loop
+            
+        except KeyboardInterrupt:
+            logger.info("Received shutdown signal")
+            break  # Exit on user interrupt
+            
+        except Exception as e:
+            restart_count += 1
+            logger.error(
+                f"❌ Monitor crashed (restart {restart_count}/{max_restarts}): {e}",
+                exc_info=True
+            )
+            
+            if restart_count < max_restarts:
+                logger.info(f"🔄 Restarting in {restart_delay} seconds...")
+                await asyncio.sleep(restart_delay)
+            else:
+                logger.error("❌ Max restart attempts reached, giving up")
+                raise
+        
+        finally:
+            # Cleanup
+            try:
+                if 'monitor' in locals():
+                    await monitor.stop()
+            except Exception as e:
+                logger.error(f"Error during cleanup: {e}")
 
 
 if __name__ == "__main__":
@@ -568,7 +747,7 @@ if __name__ == "__main__":
         "logs/monitor_{time:YYYY-MM-DD}.log",
         rotation="1 day",
         retention="30 days",
-        level="INFO",
+        level="DEBUG",  # Changed to DEBUG to see all filtering steps
     )
     
     # Run monitor

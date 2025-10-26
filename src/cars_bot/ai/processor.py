@@ -26,6 +26,7 @@ from cars_bot.ai.models import (
     AIProcessingResult,
     CarDataExtraction,
     ClassificationResult,
+    ContactExtraction,
     UniqueDescription,
 )
 from cars_bot.ai.prompts import (
@@ -157,6 +158,39 @@ class AIProcessor:
         
         return result
     
+    async def extract_contacts(self, text: str) -> ContactExtraction:
+        """
+        Extract seller contact information from post text using AI.
+        
+        Args:
+            text: Post text to extract contacts from
+        
+        Returns:
+            ContactExtraction with all extracted contact fields
+        
+        Raises:
+            APIError: If OpenAI API request fails after retries
+            ValidationError: If response doesn't match expected schema
+        """
+        logger.debug(f"Extracting contacts (length={len(text)})")
+        
+        from cars_bot.ai.prompts import build_contact_extraction_prompt
+        system_prompt, user_prompt = build_contact_extraction_prompt(text)
+        
+        result = await self._call_openai_with_retry(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_model=ContactExtraction,
+            operation="extract_contacts",
+        )
+        
+        logger.info(
+            f"Extracted contacts: telegram={result.telegram_username}, "
+            f"phone={result.phone_number}, other={bool(result.other_contacts)}"
+        )
+        
+        return result
+    
     async def generate_unique_description(
         self,
         original_text: str,
@@ -233,39 +267,37 @@ class AIProcessor:
         
         car_data = None
         unique_description = None
+        contacts = None
         
         # Step 2 & 3: Extract and Generate (only for selling posts)
-        if classification.is_selling_post:
+        if not classification.is_selling_post:
             if skip_if_not_selling:
                 logger.info("Skipping extraction/generation for non-selling post")
-            else:
-                try:
-                    car_data = await self.extract_car_data(text)
-                    total_tokens += self._estimate_tokens(text, 500)
-                    
-                    unique_description = await self.generate_unique_description(
-                        text, car_data
-                    )
-                    total_tokens += self._estimate_tokens(text, 800)
-                    
-                except Exception as e:
-                    logger.error(f"Error in extraction/generation: {e}")
-                    # Continue with partial results
-        
-        # If selling post but skip_if_not_selling is True, do extraction/generation
-        if classification.is_selling_post and skip_if_not_selling:
+        else:
+            # This is a selling post - extract data, contacts and generate description
             try:
+                # Extract car data
                 car_data = await self.extract_car_data(text)
                 total_tokens += self._estimate_tokens(text, 500)
                 
+                # Extract contacts (parallel with car data)
+                contacts = await self.extract_contacts(text)
+                total_tokens += self._estimate_tokens(text, 300)
+                
+                # Generate description
                 unique_description = await self.generate_unique_description(
                     text, car_data
                 )
                 total_tokens += self._estimate_tokens(text, 800)
                 
+                logger.info(
+                    f"✅ Extraction complete: brand={car_data.brand}, "
+                    f"model={car_data.model}, price={car_data.price}"
+                )
+                
             except Exception as e:
-                logger.error(f"Error in extraction/generation: {e}")
-                # Continue with partial results
+                logger.error(f"❌ Error in extraction/generation: {e}", exc_info=True)
+                # Continue with partial results - classification is still saved
         
         processing_time = time.time() - start_time
         
@@ -273,6 +305,7 @@ class AIProcessor:
             classification=classification,
             car_data=car_data,
             unique_description=unique_description,
+            contacts=contacts,
             processing_time_seconds=processing_time,
             tokens_used=total_tokens,
         )

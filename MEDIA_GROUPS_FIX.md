@@ -196,3 +196,5 @@ Publishing media group from -1001234567890: 5 messages using copy_messages
 ### Deep links работают
 Гиперссылка `https://t.me/{bot_username}?start=contact_{post_id}` открывает бота с параметром, который обрабатывается в `start_handler.py`.
 
+
+

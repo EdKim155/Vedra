@@ -47,6 +47,60 @@ class ClassificationResult(BaseModel):
     }
 
 
+class ContactExtraction(BaseModel):
+    """
+    Seller contact information extracted from post by AI.
+    
+    Maps to the seller_contacts table in database.
+    """
+    
+    telegram_username: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description="Telegram username (without @)"
+    )
+    
+    phone_number: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        description="Phone number in international format"
+    )
+    
+    other_contacts: Optional[str] = Field(
+        default=None,
+        description="Other contact methods (email, WhatsApp, Viber, etc.)"
+    )
+    
+    @field_validator('telegram_username')
+    @classmethod
+    def validate_username(cls, v: Optional[str]) -> Optional[str]:
+        """Remove @ symbol from username if present."""
+        if v and v.startswith('@'):
+            return v[1:]
+        return v
+    
+    @field_validator('phone_number')
+    @classmethod
+    def validate_phone(cls, v: Optional[str]) -> Optional[str]:
+        """Validate and normalize phone number."""
+        if not v:
+            return v
+        
+        import re
+        # Remove all non-digit characters except +
+        phone = re.sub(r'[^\d+]', '', v)
+        
+        # Ensure it starts with +
+        if not phone.startswith('+'):
+            # Try to add + for Russian numbers
+            if phone.startswith('7') or phone.startswith('8'):
+                phone = '+7' + phone[1:]
+            else:
+                phone = '+' + phone
+        
+        return phone if len(phone) >= 11 else None
+
+
 class CarDataExtraction(BaseModel):
     """
     Structured car data extracted from post by AI.
@@ -282,6 +336,11 @@ class AIProcessingResult(BaseModel):
     unique_description: Optional[UniqueDescription] = Field(
         default=None,
         description="Generated unique description (only if is_selling_post=True)"
+    )
+    
+    contacts: Optional[ContactExtraction] = Field(
+        default=None,
+        description="Extracted seller contact information"
     )
     
     processing_time_seconds: float = Field(

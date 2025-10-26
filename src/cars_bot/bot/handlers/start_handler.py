@@ -155,8 +155,15 @@ async def _handle_contact_request(
     
     # Get post from database
     try:
+        from sqlalchemy.orm import selectinload
+        
         result = await session.execute(
-            select(Post).where(Post.id == post_id)
+            select(Post)
+            .where(Post.id == post_id)
+            .options(
+                selectinload(Post.seller_contact),
+                selectinload(Post.car_data)
+            )
         )
         post = result.scalar_one_or_none()
         
@@ -262,19 +269,50 @@ def _format_contact_message(post: Post) -> str:
         price_formatted = f"{car.price:,}".replace(",", " ")
         message_text += f"💰 <b>Цена:</b> {price_formatted}₽\n\n"
     
-    # Add original message link
-    if post.original_message_link:
+    # Add link to OUR published post (not original)
+    if post.published and post.published_message_id:
+        # Build link to our news channel post
+        from cars_bot.config import get_settings
+        settings = get_settings()
+        news_channel_id = settings.bot.news_channel_id
+        
+        # Format link based on channel ID type
+        if news_channel_id.startswith('@'):
+            # Public channel with username
+            channel_username = news_channel_id.lstrip('@')
+            post_link = f"https://t.me/{channel_username}/{post.published_message_id}"
+        elif news_channel_id.startswith('-100'):
+            # Private/public channel with numeric ID
+            # Remove -100 prefix for t.me/c/ links
+            numeric_id = news_channel_id.replace('-100', '')
+            post_link = f"https://t.me/c/{numeric_id}/{post.published_message_id}"
+        else:
+            # Fallback to original link
+            post_link = post.original_message_link
+        
+        message_text += f"📝 <a href='{post_link}'>Вернуться к объявлению</a>\n\n"
+    elif post.original_message_link:
+        # Fallback if not published yet
         message_text += f"📝 <a href='{post.original_message_link}'>Оригинальное объявление</a>\n\n"
     
     # Main text
-    message_text += "<b>Связаться с продавцом:</b>\n"
+    message_text += "<b>Связаться с продавцом:</b>\n\n"
     
     # Check if we have contacts
     has_telegram = bool(seller.telegram_username)
     has_phone = bool(seller.phone_number)
     
     if has_telegram or has_phone:
-        message_text += "Нажмите на кнопку ниже для связи 👇"
+        # Show Telegram username if available
+        if has_telegram:
+            username = seller.telegram_username.lstrip('@')
+            message_text += f"💬 <b>Telegram:</b> @{username}\n"
+        
+        # Show phone number if available (since inline keyboard can't have tel: links)
+        if has_phone:
+            message_text += f"📞 <b>Телефон:</b> <code>{seller.phone_number}</code>\n"
+        
+        message_text += "\n👆 <i>Нажмите, чтобы скопировать</i>"
     else:
         message_text += "❌ Контактная информация недоступна"
         

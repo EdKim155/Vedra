@@ -198,9 +198,12 @@ def get_seller_contacts_keyboard(
     """
     Get inline keyboard with seller contact buttons.
     
+    NOTE: Telegram inline keyboards do NOT support tel: links!
+    Phone numbers should be displayed in message text only.
+    
     Args:
         telegram_username: Telegram username (with or without @)
-        phone_number: Phone number
+        phone_number: Phone number (not used in buttons, only for compatibility)
     
     Returns:
         InlineKeyboardMarkup with contact buttons
@@ -216,14 +219,8 @@ def get_seller_contacts_keyboard(
             url=f"https://t.me/{username}"
         )
     
-    # Add phone button if number is provided
-    if phone_number:
-        # Clean phone number for display
-        clean_phone = phone_number.replace('+', '').replace('-', '').replace(' ', '')
-        builder.button(
-            text=f"📞 {phone_number}",
-            url=f"tel:{clean_phone}"
-        )
+    # NOTE: Phone button removed - Telegram doesn't support tel: URLs in inline keyboards
+    # Phone number is displayed in the message text instead
     
     # Arrange buttons vertically (one per row)
     builder.adjust(1)

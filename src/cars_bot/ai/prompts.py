@@ -63,6 +63,78 @@ CLASSIFICATION_FEW_SHOT_EXAMPLES: Final[list[dict]] = [
 ]
 
 # =============================================================================
+# CONTACT EXTRACTION PROMPTS
+# =============================================================================
+
+EXTRACT_CONTACTS_SYSTEM_PROMPT: Final[str] = """Ты эксперт по извлечению контактной информации из объявлений о продаже автомобилей.
+
+ЗАДАЧА: Извлеки ВСЕ контактные данные продавца. Используй null если информация отсутствует.
+
+ПРАВИЛА ИЗВЛЕЧЕНИЯ:
+• telegram_username - username БЕЗ @ (например: "seller123", "ivan_avto")
+• phone_number - номер в международном формате с + (например: "+79991234567")
+• other_contacts - ЛЮБЫЕ другие контакты: WhatsApp, Viber, email, ссылки и т.д.
+
+ИСТОЧНИКИ КОНТАКТОВ:
+✓ Явные упоминания: "пишите @username", "звоните +7...", "WhatsApp: ..."
+✓ Призывы к действию: "пишите в ЛС", "звоните", "WhatsApp/Viber"
+✓ Ссылки: t.me/username, wa.me/..., телеграм-ссылки
+✓ Email адреса если есть
+✓ Упоминания мессенджеров даже без конкретных номеров
+
+НОРМАЛИЗАЦИЯ:
+• Telegram: удали @, оставь только username
+• Телефон: преобразуй в формат +7XXXXXXXXXX (для России)
+• Другое: оставь как есть, но структурируй
+
+ПРИМЕРЫ:
+"Пишите @seller_avto" → telegram_username: "seller_avto"
+"Звоните 8-999-123-45-67" → phone_number: "+79991234567"
+"WhatsApp/Viber по номеру" → other_contacts: "WhatsApp, Viber доступны"
+"Связь в ЛС" → telegram_username: извлеки из контекста или null
+
+ФОРМАТ ОТВЕТА - только валидный JSON:
+{
+  "telegram_username": "username или null",
+  "phone_number": "+7XXXXXXXXXX или null",
+  "other_contacts": "описание других контактов или null"
+}"""
+
+EXTRACT_CONTACTS_USER_PROMPT_TEMPLATE: Final[str] = """Извлеки контактную информацию продавца из этого объявления:
+
+{text}
+
+Верни JSON со всеми найденными контактами."""
+
+# Few-shot examples for contact extraction
+CONTACT_EXTRACTION_FEW_SHOT_EXAMPLES: Final[list[dict]] = [
+    {
+        "user": "Продам BMW 3 серии 2008. Цена 850к. Звоните +7-999-123-45-67 или пишите @bmw_seller",
+        "assistant": """{
+  "telegram_username": "bmw_seller",
+  "phone_number": "+79991234567",
+  "other_contacts": null
+}""",
+    },
+    {
+        "user": "Toyota Camry 2015 в отличном состоянии. 1.2 млн. Все вопросы в личку или WhatsApp 8(903)555-66-77",
+        "assistant": """{
+  "telegram_username": null,
+  "phone_number": "+79035556677",
+  "other_contacts": "WhatsApp доступен"
+}""",
+    },
+    {
+        "user": "Mercedes E-класс 2018. По всем вопросам пишите в ЛС или звоните",
+        "assistant": """{
+  "telegram_username": null,
+  "phone_number": null,
+  "other_contacts": "Связь в личных сообщениях Telegram, возможен звонок"
+}""",
+    },
+]
+
+# =============================================================================
 # EXTRACTION PROMPTS
 # =============================================================================
 
@@ -253,6 +325,31 @@ def build_classification_prompt(
     
     # Few-shot examples are added in processor if needed
     return (CLASSIFY_POST_SYSTEM_PROMPT, user_prompt)
+
+
+def build_contact_extraction_prompt(
+    text: str,
+    use_few_shot: bool = False,
+) -> tuple[str, str]:
+    """
+    Build contact extraction prompt with system and user messages.
+    
+    Args:
+        text: Post text to extract contacts from
+        use_few_shot: Whether to include few-shot examples
+    
+    Returns:
+        Tuple of (system_prompt, user_prompt)
+    
+    Note:
+        Contact extraction benefits from few-shot examples as contact formats vary.
+    """
+    # Truncate text (keep first 2000 chars - contacts usually in beginning/end)
+    truncated_text = text[:2000] if len(text) > 2000 else text
+    
+    user_prompt = EXTRACT_CONTACTS_USER_PROMPT_TEMPLATE.format(text=truncated_text)
+    
+    return (EXTRACT_CONTACTS_SYSTEM_PROMPT, user_prompt)
 
 
 def build_extraction_prompt(

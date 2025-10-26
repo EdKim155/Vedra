@@ -94,10 +94,19 @@ def process_post_task(self, post_id: int) -> dict:
     start_time = time.time()
 
     async def do_process():
+        from sqlalchemy.orm import selectinload
+        
         db_manager = get_db_manager()
         async with db_manager.session() as session:
-            # Load post
-            result = await session.execute(select(Post).where(Post.id == post_id))
+            # Load post with relationships
+            result = await session.execute(
+                select(Post)
+                .where(Post.id == post_id)
+                .options(
+                    selectinload(Post.seller_contact),
+                    selectinload(Post.car_data)
+                )
+            )
             post = result.scalar_one_or_none()
 
             if not post:
@@ -117,8 +126,15 @@ def process_post_task(self, post_id: int) -> dict:
                 # Update post with classification
                 post.is_selling_post = result.classification.is_selling_post
                 post.confidence_score = result.classification.confidence
+                
+                logger.info(
+                    f"Post {post_id}: is_selling={result.classification.is_selling_post}, "
+                    f"has_car_data={result.car_data is not None}"
+                )
 
                 if result.classification.is_selling_post and result.car_data:
+                    logger.info(f"💾 Saving car data for post {post_id}: {result.car_data.brand} {result.car_data.model}")
+                    
                     # Save car data
                     car_data = CarData(
                         post_id=post.id,
@@ -136,26 +152,57 @@ def process_post_task(self, post_id: int) -> dict:
                         price_justification=result.car_data.price_justification,
                     )
                     session.add(car_data)
+                    
+                    # Save AI-extracted contacts (replacing old regex extraction)
+                    if result.contacts:
+                        from cars_bot.database.models.seller_contact import SellerContact
+                        
+                        # Check if seller_contact already exists (from regex)
+                        if post.seller_contact:
+                            # Update existing contact with AI data
+                            post.seller_contact.telegram_username = result.contacts.telegram_username or post.seller_contact.telegram_username
+                            post.seller_contact.phone_number = result.contacts.phone_number or post.seller_contact.phone_number
+                            post.seller_contact.other_contacts = result.contacts.other_contacts or post.seller_contact.other_contacts
+                            logger.info(f"📞 Updated contacts for post {post_id} with AI data")
+                        else:
+                            # Create new seller contact
+                            seller_contact = SellerContact(
+                                post_id=post.id,
+                                telegram_username=result.contacts.telegram_username,
+                                phone_number=result.contacts.phone_number,
+                                other_contacts=result.contacts.other_contacts,
+                            )
+                            session.add(seller_contact)
+                            logger.info(f"📞 Saved AI-extracted contacts for post {post_id}")
 
                     # Save generated description
                     if result.unique_description:
                         post.processed_text = result.unique_description.generated_text
+                        logger.info(f"📝 Saved processed text ({len(post.processed_text)} chars)")
 
                     # Mark as ready for publishing
                     post.date_processed = datetime.now()
 
                     # Commit before queuing publish task
                     await session.commit()
+                    logger.info(f"✅ Committed post {post_id} to database")
 
                     # Queue for publishing
                     from cars_bot.tasks.publishing_tasks import publish_post_task
 
-                    publish_post_task.apply_async(
+                    task = publish_post_task.apply_async(
                         args=[post_id], countdown=5, priority=5
                     )
+                    logger.info(f"📤 Queued post {post_id} for publishing (task_id={task.id})")
+                    
                 else:
                     # Just commit the classification
                     await session.commit()
+                    logger.info(
+                        f"⚠️ Post {post_id} not queued for publishing: "
+                        f"is_selling={result.classification.is_selling_post}, "
+                        f"has_car_data={result.car_data is not None}"
+                    )
 
                 processing_time = time.time() - start_time
 

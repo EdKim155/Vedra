@@ -629,10 +629,14 @@ def sync_subscriptions_from_sheets_task(self) -> dict:
             updated_count = 0
             created_count = 0
             skipped_count = 0
+            updated_users = []  # Track users with auto-calculated dates
 
             async with db_manager.session() as session:
                 for subscriber in subscribers_data:
                     try:
+                        # Check if dates are missing (need auto-calculation)
+                        needs_date_update = not subscriber.start_date or not subscriber.end_date
+                        
                         # Apply subscription changes from sheets to database
                         await subscription_manager.apply_subscription_from_sheets(
                             session=session,
@@ -643,12 +647,12 @@ def sync_subscriptions_from_sheets_task(self) -> dict:
                             end_date=subscriber.end_date,
                         )
                         
-                        # Check if it was an update or create
-                        # (this is simplified - in reality we'd need to track this)
-                        if subscriber.start_date and subscriber.end_date:
-                            updated_count += 1
-                        else:
+                        # Track for later update in Sheets
+                        if needs_date_update:
+                            updated_users.append(subscriber.user_id)
                             created_count += 1
+                        else:
+                            updated_count += 1
                             
                     except Exception as e:
                         logger.error(
@@ -657,8 +661,48 @@ def sync_subscriptions_from_sheets_task(self) -> dict:
                         skipped_count += 1
                         continue
 
-                # Commit all changes
+                # Commit all changes to database
                 await session.commit()
+                
+            # Update Google Sheets with calculated dates (after commit)
+            if updated_users:
+                logger.info(f"Updating {len(updated_users)} subscribers in Google Sheets with calculated dates...")
+                async with db_manager.session() as session:
+                    from sqlalchemy import select
+                    from cars_bot.database.models.user import User
+                    from cars_bot.database.models.subscription import Subscription
+                    
+                    for user_id in updated_users:
+                        try:
+                            # Get user and their subscription from DB
+                            user_stmt = select(User).where(User.telegram_user_id == user_id)
+                            user_result = await session.execute(user_stmt)
+                            user = user_result.scalar_one_or_none()
+                            
+                            if not user:
+                                logger.warning(f"User {user_id} not found in DB")
+                                continue
+                            
+                            # Get active subscription
+                            sub_stmt = select(Subscription).where(
+                                Subscription.user_id == user.id,
+                                Subscription.is_active == True,
+                            ).order_by(Subscription.end_date.desc()).limit(1)
+                            sub_result = await session.execute(sub_stmt)
+                            subscription = sub_result.scalar_one_or_none()
+                            
+                            if subscription:
+                                # Update Google Sheets with dates from DB
+                                sheets_manager.update_subscriber_status(
+                                    user_id=user_id,
+                                    subscription_type=subscription.subscription_type.value,
+                                    is_active=subscription.is_active,
+                                    start_date=subscription.start_date,
+                                    end_date=subscription.end_date,
+                                )
+                                logger.info(f"✅ Updated sheets for user {user_id}: {subscription.start_date} - {subscription.end_date}")
+                        except Exception as e:
+                            logger.error(f"Failed to update sheets for user {user_id}: {e}")
 
             sync_time = time.time() - start_time
 

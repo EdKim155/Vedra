@@ -80,9 +80,16 @@ async def get_contacts_callback(
         )
         return
     
-    # Get post from database
+    # Get post from database with related data
+    from sqlalchemy.orm import selectinload
+    
     result = await session.execute(
-        select(Post).where(Post.id == post_id)
+        select(Post)
+        .where(Post.id == post_id)
+        .options(
+            selectinload(Post.seller_contact),
+            selectinload(Post.car_data)
+        )
     )
     post = result.scalar_one_or_none()
     

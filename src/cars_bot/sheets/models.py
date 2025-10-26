@@ -12,17 +12,26 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class ChannelRow(BaseModel):
-    """Model for a row in 'Каналы для мониторинга' sheet."""
+    """
+    Model for a row in 'Каналы для мониторинга' sheet.
+    
+    Structure (columns A-G):
+    A: ID (auto-generated)
+    B: Username канала
+    C: Название канала
+    D: Активен
+    E: Дата добавления
+    F: Опубликовано
+    G: Последний пост (ссылка на оригинал)
+    """
 
     id: Optional[int] = Field(None, description="Channel ID (auto-generated)")
     username: str = Field(..., description="Channel username or link")
     title: str = Field("", description="Human-readable channel name")
     is_active: bool = Field(True, description="Whether monitoring is enabled")
-    keywords: Optional[str] = Field(None, description="Comma-separated keywords")
     date_added: Optional[datetime] = Field(None, description="When channel was added")
-    total_posts: int = Field(0, description="Total posts found")
     published_posts: int = Field(0, description="Total posts published")
-    last_post_date: Optional[datetime] = Field(None, description="Date of last processed post")
+    last_post_link: Optional[str] = Field(None, description="Link to last post from source channel")
     
     @field_validator("id", mode="before")
     @classmethod
@@ -31,21 +40,6 @@ class ChannelRow(BaseModel):
         if v == "" or v is None:
             return None
         return int(v)
-
-    @field_validator("keywords", mode="before")
-    @classmethod
-    def parse_keywords(cls, v: Optional[str]) -> Optional[str]:
-        """Clean up keywords string."""
-        if not v or not isinstance(v, str):
-            return None
-        return v.strip()
-
-    @property
-    def keywords_list(self) -> list[str]:
-        """Get keywords as list."""
-        if not self.keywords:
-            return []
-        return [k.strip() for k in self.keywords.split(",") if k.strip()]
 
 
 class FilterSettings(BaseModel):

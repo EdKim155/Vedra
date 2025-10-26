@@ -27,6 +27,9 @@ from cars_bot.database.models.post import Post
 
 logger = logging.getLogger(__name__)
 
+# Flag to use Telethon for media copying (solves private channel access issue)
+USE_TELETHON_FOR_MEDIA = True
+
 
 class PublishingService:
     """
@@ -563,6 +566,68 @@ class PublishingService:
             source_chat_id = post.source_channel.channel_id
             original_message_id = post.message_ids[0]
 
+            # Try Telethon-based publishing first (works with private channels)
+            if USE_TELETHON_FOR_MEDIA:
+                telethon_client = None
+                try:
+                    from cars_bot.publishing.telethon_client import get_telethon_client
+                    
+                    logger.info(f"Using Telethon to copy media from @{post.source_channel.channel_username}")
+                    
+                    # Get Telethon client
+                    telethon_client = await get_telethon_client()
+                    
+                    # Parse source channel ID for Telethon
+                    if source_chat_id.startswith('@'):
+                        source_entity = source_chat_id
+                    elif source_chat_id.startswith('-100'):
+                        numeric_id = int(source_chat_id.replace('-100', ''))
+                        source_entity = numeric_id
+                    else:
+                        try:
+                            source_entity = int(source_chat_id)
+                        except ValueError:
+                            source_entity = source_chat_id
+                    
+                    # Get message with media from source channel
+                    source_message = await telethon_client.get_messages(
+                        source_entity,
+                        ids=original_message_id
+                    )
+                    
+                    if not source_message or not source_message.media:
+                        logger.warning("Source message has no media, falling back")
+                        raise ValueError("No media in source message")
+                    
+                    # Send message using Telethon directly to target channel
+                    # Parse target channel ID
+                    if self.channel_id.startswith('-100'):
+                        target_numeric = int(self.channel_id.replace('-100', ''))
+                    else:
+                        target_numeric = int(self.channel_id)
+                    
+                    logger.info(f"Sending media to target channel {target_numeric}")
+                    
+                    sent_message = await telethon_client.send_message(
+                        entity=target_numeric,
+                        message=caption,
+                        file=source_message.media,
+                        parse_mode='html'
+                    )
+                    
+                    logger.info(f"✓ Single media published via Telethon (message ID: {sent_message.id})")
+                    return sent_message.id
+                    
+                except Exception as telethon_error:
+                    logger.warning(f"Telethon publishing failed: {telethon_error}")
+                    logger.info("Falling back to Bot API copy_message")
+                finally:
+                    # Always disconnect Telethon client
+                    if telethon_client and telethon_client.is_connected():
+                        await telethon_client.disconnect()
+                        logger.debug("Telethon client disconnected")
+
+            # Fallback to Bot API copy_message (may fail for private channels)
             # Parse source channel ID to proper format
             if source_chat_id.startswith('-100'):
                 try:
@@ -617,10 +682,14 @@ class PublishingService:
 
         except TelegramAPIError as e:
             logger.error(f"Telegram API error copying single message: {e}")
-            return None
+            logger.warning(f"Falling back to text-only publishing for post {post.id}")
+            # Fallback: publish as text-only if copy fails
+            return await self._publish_text_only_with_link(caption)
         except Exception as e:
             logger.error(f"Error copying single message: {e}", exc_info=True)
-            return None
+            logger.warning(f"Falling back to text-only publishing for post {post.id}")
+            # Fallback: publish as text-only if copy fails
+            return await self._publish_text_only_with_link(caption)
 
     async def _publish_media_group_by_copying(
         self,
@@ -653,7 +722,80 @@ class PublishingService:
                 return None
 
             source_chat_id = post.source_channel.channel_id
+            sorted_message_ids = sorted(post.message_ids[:10])  # Telegram limit: 10 media
 
+            # Try Telethon-based publishing first (works with private channels)
+            if USE_TELETHON_FOR_MEDIA:
+                telethon_client = None
+                try:
+                    from cars_bot.publishing.telethon_client import get_telethon_client
+                    
+                    logger.info(f"Using Telethon to copy media group from @{post.source_channel.channel_username}")
+                    
+                    # Get Telethon client
+                    telethon_client = await get_telethon_client()
+                    
+                    # Parse source channel ID for Telethon
+                    if source_chat_id.startswith('@'):
+                        source_entity = source_chat_id
+                    elif source_chat_id.startswith('-100'):
+                        numeric_id = int(source_chat_id.replace('-100', ''))
+                        source_entity = numeric_id
+                    else:
+                        try:
+                            source_entity = int(source_chat_id)
+                        except ValueError:
+                            source_entity = source_chat_id
+                    
+                    # Get ALL messages with media from source channel
+                    source_messages = await telethon_client.get_messages(
+                        source_entity,
+                        ids=sorted_message_ids
+                    )
+                    
+                    if not source_messages or not any(msg.media for msg in source_messages):
+                        logger.warning("Source messages have no media, falling back")
+                        raise ValueError("No media in source messages")
+                    
+                    # Send media group using Telethon
+                    # Parse target channel ID
+                    if self.channel_id.startswith('-100'):
+                        target_numeric = int(self.channel_id.replace('-100', ''))
+                    else:
+                        target_numeric = int(self.channel_id)
+                    
+                    logger.info(f"Sending media group to target channel {target_numeric}")
+                    
+                    # Send media group - use send_file with multiple files
+                    media_files = [msg.media for msg in source_messages if msg.media]
+                    
+                    # First message gets the caption
+                    sent_messages = await telethon_client.send_file(
+                        entity=target_numeric,
+                        file=media_files,
+                        caption=caption,
+                        parse_mode='html'
+                    )
+                    
+                    # Get first message ID
+                    if isinstance(sent_messages, list):
+                        first_message_id = sent_messages[0].id
+                    else:
+                        first_message_id = sent_messages.id
+                    
+                    logger.info(f"✓ Media group published via Telethon (first message ID: {first_message_id})")
+                    return first_message_id
+                    
+                except Exception as telethon_error:
+                    logger.warning(f"Telethon media group publishing failed: {telethon_error}")
+                    logger.info("Falling back to Bot API copy_messages")
+                finally:
+                    # Always disconnect Telethon client
+                    if telethon_client and telethon_client.is_connected():
+                        await telethon_client.disconnect()
+                        logger.debug("Telethon client disconnected")
+
+            # Fallback to Bot API copy_messages (may fail for private channels)
             # Parse source channel ID to proper format
             if source_chat_id.startswith('-100'):
                 try:
@@ -669,9 +811,6 @@ class PublishingService:
                 except ValueError:
                     logger.error(f"Invalid channel ID format: {source_chat_id}")
                     return None
-
-            # Sort message IDs (copy_messages requires strictly increasing order)
-            sorted_message_ids = sorted(post.message_ids[:10])  # Telegram limit: 10 media
 
             logger.info(
                 f"Publishing media group from {source_chat_id}: "
@@ -720,10 +859,14 @@ class PublishingService:
 
         except TelegramAPIError as e:
             logger.error(f"Telegram API error copying media group: {e}")
-            return None
+            logger.warning(f"Falling back to text-only publishing for post {post.id}")
+            # Fallback: publish as text-only if copy fails
+            return await self._publish_text_only_with_link(caption)
         except Exception as e:
             logger.error(f"Error copying media group: {e}", exc_info=True)
-            return None
+            logger.warning(f"Falling back to text-only publishing for post {post.id}")
+            # Fallback: publish as text-only if copy fails
+            return await self._publish_text_only_with_link(caption)
     
     async def _publish_single_media(
         self,
