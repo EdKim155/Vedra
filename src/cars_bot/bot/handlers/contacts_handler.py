@@ -221,14 +221,14 @@ def _format_contacts_with_keyboard(post: Post) -> tuple[str, object]:
         price_formatted = f"{car.price:,}".replace(",", " ")
         contacts_text += f"💰 <b>Цена:</b> {price_formatted}₽\n\n"
     
-    # Add original message link ONLY if post has media
+    # Add original message link ONLY if post has NO media
     has_media = bool(post.message_ids) or bool(post.media_files)
     logger.debug(
         f"Contact display for post {post.id}: has_media={has_media}, "
         f"message_ids={post.message_ids}, media_files={post.media_files}, "
         f"original_link={post.original_message_link}"
     )
-    if post.original_message_link and has_media:
+    if post.original_message_link and not has_media:
         contacts_text += f"📝 <a href='{post.original_message_link}'>Оригинальное объявление с медиа</a>\n\n"
     
     # Main text

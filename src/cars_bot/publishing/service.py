@@ -140,9 +140,9 @@ class PublishingService:
             
             # Adaptive link text based on media presence
             if has_media:
-                link_text = "Получить контакты и ссылку на оригинальный пост с медиа"
-            else:
                 link_text = "Получить контакты"
+            else:
+                link_text = "Получить контакты и ссылку на оригинальный пост с медиа"
             
             post_text += f"\n\n📞 <a href='{contact_link}'>{link_text}</a>"
         
