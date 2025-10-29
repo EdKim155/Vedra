@@ -59,3 +59,4 @@ echo "Monitor logs: tail -f logs/monitor_output.log"
 echo "Worker logs: tail -f logs/celery_worker_output.log"
 echo "Beat logs: tail -f logs/celery_beat_output.log"
 
+
