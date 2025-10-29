@@ -3,6 +3,8 @@ Google Sheets synchronization tasks for Celery.
 
 Tasks:
 - sync_channels_task: Sync monitored channels from Google Sheets
+- add_new_user_to_sheets_task: Add new user to Google Sheets subscribers
+- update_user_contact_count_task: Update contact requests count for a user
 - sync_subscribers_task: Sync subscriber data to Google Sheets
 - update_analytics_task: Update analytics data in Google Sheets
 - log_to_sheets_task: Log events to Google Sheets
@@ -406,6 +408,84 @@ def add_new_user_to_sheets_task(self, user_id: int, telegram_user_id: int) -> di
         logger.error(f"Error adding user to Google Sheets: {str(e)}")
         logger.exception("Full traceback:")
         return {"success": False, "error": str(e)}
+
+
+@app.task(
+    bind=True,
+    base=SheetsTask,
+    name="cars_bot.tasks.sheets_tasks.update_user_contact_count_task",
+    soft_time_limit=30,
+    time_limit=60,
+)
+def update_user_contact_count_task(
+    self, telegram_user_id: int, contact_requests_count: int
+) -> dict:
+    """
+    Update contact requests count for a user in Google Sheets.
+    
+    This task updates only the contact_requests field (Column I) in the "Подписчики" sheet.
+    It uses update_subscriber_safe_fields() to avoid overwriting subscription data.
+    
+    Args:
+        telegram_user_id: Telegram user ID
+        contact_requests_count: New contact requests count
+        
+    Returns:
+        Dict with update results
+    """
+    logger.info(
+        f"[Task] Updating contact requests count for user {telegram_user_id} to {contact_requests_count}"
+    )
+    start_time = time.time()
+    
+    try:
+        from cars_bot.sheets.manager import GoogleSheetsManager
+        from cars_bot.config import get_settings
+        
+        settings = get_settings()
+        sheets_manager = GoogleSheetsManager(
+            credentials_path=settings.google.credentials_file,
+            spreadsheet_id=settings.google.spreadsheet_id
+        )
+        
+        # Update only contact_requests field
+        was_updated = sheets_manager.update_subscriber_safe_fields(
+            user_id=telegram_user_id,
+            contact_requests=contact_requests_count,
+        )
+        
+        sync_time = time.time() - start_time
+        
+        if was_updated:
+            logger.info(
+                f"✅ Updated contact requests count for user {telegram_user_id} in Google Sheets "
+                f"in {sync_time:.2f}s"
+            )
+            return {
+                "success": True,
+                "user_id": telegram_user_id,
+                "contact_requests_count": contact_requests_count,
+                "sync_time": sync_time,
+            }
+        else:
+            logger.warning(
+                f"User {telegram_user_id} not found in Google Sheets for contact count update"
+            )
+            return {
+                "success": False,
+                "error": "User not found in sheets",
+                "user_id": telegram_user_id,
+                "sync_time": sync_time,
+            }
+        
+    except Exception as e:
+        logger.error(f"Error updating contact count in Google Sheets: {str(e)}")
+        logger.exception("Full traceback:")
+        return {
+            "success": False,
+            "error": str(e),
+            "user_id": telegram_user_id,
+        }
 
 
 @app.task(

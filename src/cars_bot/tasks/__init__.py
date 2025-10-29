@@ -28,6 +28,7 @@ from cars_bot.tasks.sheets_tasks import (
     sync_subscribers_task,
     sync_subscriptions_from_sheets_task,
     update_analytics_task,
+    update_user_contact_count_task,
 )
 from cars_bot.tasks.subscription_tasks import (
     check_expired_subscriptions,
@@ -50,6 +51,7 @@ __all__ = [
     "sync_subscribers_task",
     "sync_subscriptions_from_sheets_task",
     "add_new_user_to_sheets_task",
+    "update_user_contact_count_task",
     "update_analytics_task",
     "log_to_sheets_task",
     # Monitoring tasks
