@@ -313,6 +313,104 @@ def sync_channels_task(self) -> dict:
 @app.task(
     bind=True,
     base=SheetsTask,
+    name="cars_bot.tasks.sheets_tasks.add_new_user_to_sheets_task",
+    soft_time_limit=30,
+    time_limit=60,
+)
+def add_new_user_to_sheets_task(self, user_id: int, telegram_user_id: int) -> dict:
+    """
+    Add new user to Google Sheets "Подписчики" sheet.
+    
+    This task is called when a new user registers with the bot.
+    It adds the user to the Subscribers sheet with FREE subscription type.
+    
+    Args:
+        user_id: Internal database user ID
+        telegram_user_id: Telegram user ID
+        
+    Returns:
+        Dict with result status
+    """
+    logger.info(f"[Task] Adding new user {telegram_user_id} to Google Sheets")
+    start_time = time.time()
+    
+    try:
+        import asyncio
+        from sqlalchemy import select
+        from cars_bot.sheets.manager import GoogleSheetsManager
+        from cars_bot.sheets.models import SubscriberRow, SubscriptionTypeEnum
+        from cars_bot.database.session import get_db_manager
+        from cars_bot.database.models.user import User
+        from cars_bot.database.models.subscription import Subscription
+        from cars_bot.config import get_settings
+        
+        async def do_add():
+            settings = get_settings()
+            sheets_manager = GoogleSheetsManager(
+                credentials_path=settings.google.credentials_file,
+                spreadsheet_id=settings.google.spreadsheet_id
+            )
+            
+            db_manager = get_db_manager()
+            async with db_manager.session() as session:
+                # Get user from database
+                result = await session.execute(
+                    select(User).where(User.id == user_id)
+                )
+                user = result.scalar_one_or_none()
+                
+                if not user:
+                    logger.error(f"User {user_id} not found in database")
+                    return {"success": False, "error": "User not found"}
+                
+                # Get active subscription if exists
+                sub_result = await session.execute(
+                    select(Subscription).where(
+                        Subscription.user_id == user.id,
+                        Subscription.is_active == True,
+                    )
+                )
+                subscription = sub_result.scalar_one_or_none()
+                
+                # Create subscriber row
+                subscriber_row = SubscriberRow(
+                    user_id=user.telegram_user_id,
+                    username=user.username or "",
+                    name=user.full_name,
+                    subscription_type=subscription.subscription_type if subscription else SubscriptionTypeEnum.FREE,
+                    is_active=bool(subscription and subscription.is_active),
+                    start_date=subscription.start_date if subscription else None,
+                    end_date=subscription.end_date if subscription else None,
+                    registration_date=user.created_at,
+                    contact_requests=user.contact_requests_count,
+                )
+                
+                # Add to Google Sheets
+                sheets_manager.add_subscriber(subscriber_row)
+                
+                sync_time = time.time() - start_time
+                
+                logger.info(
+                    f"✅ Added user {telegram_user_id} to Google Sheets in {sync_time:.2f}s"
+                )
+                
+                return {
+                    "success": True,
+                    "user_id": telegram_user_id,
+                    "sync_time": sync_time,
+                }
+        
+        return asyncio.run(do_add())
+        
+    except Exception as e:
+        logger.error(f"Error adding user to Google Sheets: {str(e)}")
+        logger.exception("Full traceback:")
+        return {"success": False, "error": str(e)}
+
+
+@app.task(
+    bind=True,
+    base=SheetsTask,
     name="cars_bot.tasks.sheets_tasks.sync_subscribers_task",
     soft_time_limit=60,
     time_limit=90,
@@ -320,19 +418,29 @@ def sync_channels_task(self) -> dict:
 def sync_subscribers_task(self) -> dict:
     """
     Sync subscriber data from database to Google Sheets.
-
-    Updates "Подписчики" sheet with current subscriber information.
-
+    
+    This task updates existing subscribers or adds new ones to the "Подписчики" sheet.
+    It does NOT overwrite manual subscription changes (Type, Active, Dates).
+    Only safe fields are updated: username, name, contact_requests.
+    
+    New logic:
+    - Get all users from database
+    - For each user:
+      - Check if user exists in Google Sheets
+      - If NOT in Sheets → add via add_subscriber()
+      - If EXISTS in Sheets → update only safe fields via update_subscriber_safe_fields()
+    
     Returns:
         Dict with sync results
     """
-    logger.info("[Task] Syncing subscribers to Google Sheets")
+    logger.info("[Task] Syncing subscribers to Google Sheets (safe mode)")
     start_time = time.time()
 
     try:
         import asyncio
         from sqlalchemy import select
         from cars_bot.sheets.manager import GoogleSheetsManager
+        from cars_bot.sheets.models import SubscriberRow, SubscriptionTypeEnum
         from cars_bot.database.session import get_db_manager
         from cars_bot.database.models.user import User
         from cars_bot.database.models.subscription import Subscription
@@ -350,51 +458,73 @@ def sync_subscribers_task(self) -> dict:
                 # Get all users
                 result = await session.execute(select(User))
                 users = result.scalars().all()
-
-                subscribers_data = []
+                
+                # Get existing subscribers from Sheets
+                existing_subscribers = sheets_manager.get_subscribers(use_cache=False)
+                existing_user_ids = {sub.user_id for sub in existing_subscribers}
+                
+                added_count = 0
+                updated_count = 0
+                skipped_count = 0
+                
                 for user in users:
-                    # Get active subscription
-                    sub_result = await session.execute(
-                        select(Subscription).where(
-                            Subscription.user_id == user.id,
-                            Subscription.is_active == True,
+                    try:
+                        # Get active subscription
+                        sub_result = await session.execute(
+                            select(Subscription).where(
+                                Subscription.user_id == user.id,
+                                Subscription.is_active == True,
+                            )
                         )
-                    )
-                    subscription = sub_result.scalar_one_or_none()
-
-                    subscribers_data.append(
-                        {
-                            "user_id": user.telegram_user_id,
-                            "username": user.username or "",
-                            "first_name": user.first_name,
-                            "last_name": user.last_name or "",
-                            "subscription_type": (
-                                subscription.subscription_type if subscription else "FREE"
-                            ),
-                            "is_active": bool(subscription and subscription.is_active),
-                            "start_date": (
-                                subscription.start_date if subscription else None
-                            ),
-                            "end_date": (
-                                subscription.end_date if subscription else None
-                            ),
-                            "registered_at": user.created_at,
-                        }
-                    )
-
-                # Update Google Sheets (synchronous call)
-                sheets_manager.update_subscribers(subscribers_data)
+                        subscription = sub_result.scalar_one_or_none()
+                        
+                        # Check if user exists in Sheets
+                        if user.telegram_user_id not in existing_user_ids:
+                            # User NOT in Sheets → add via add_subscriber()
+                            subscriber_row = SubscriberRow(
+                                user_id=user.telegram_user_id,
+                                username=user.username or "",
+                                name=user.full_name,
+                                subscription_type=subscription.subscription_type if subscription else SubscriptionTypeEnum.FREE,
+                                is_active=bool(subscription and subscription.is_active),
+                                start_date=subscription.start_date if subscription else None,
+                                end_date=subscription.end_date if subscription else None,
+                                registration_date=user.created_at,
+                                contact_requests=user.contact_requests_count,
+                            )
+                            sheets_manager.add_subscriber(subscriber_row)
+                            added_count += 1
+                            logger.info(f"Added new subscriber to Sheets: {user.telegram_user_id}")
+                        else:
+                            # User EXISTS in Sheets → update only safe fields
+                            was_updated = sheets_manager.update_subscriber_safe_fields(
+                                user_id=user.telegram_user_id,
+                                username=user.username or "",
+                                name=user.full_name,
+                                contact_requests=user.contact_requests_count,
+                            )
+                            if was_updated:
+                                updated_count += 1
+                                logger.debug(f"Updated safe fields for subscriber: {user.telegram_user_id}")
+                    
+                    except Exception as e:
+                        logger.error(f"Error syncing subscriber {user.telegram_user_id}: {e}")
+                        skipped_count += 1
+                        continue
 
                 sync_time = time.time() - start_time
 
                 logger.info(
                     f"✅ Subscribers synced to Google Sheets in {sync_time:.2f}s: "
-                    f"{len(subscribers_data)} users"
+                    f"{added_count} added, {updated_count} updated, {skipped_count} skipped"
                 )
 
                 return {
                     "success": True,
-                    "subscribers_count": len(subscribers_data),
+                    "added": added_count,
+                    "updated": updated_count,
+                    "skipped": skipped_count,
+                    "total": len(users),
                     "sync_time": sync_time,
                 }
 
@@ -596,10 +726,14 @@ def sync_subscriptions_from_sheets_task(self) -> dict:
     When you change subscription type, dates, or status in the sheet,
     this task will apply those changes to the database.
     
+    Important: This is a ONE-WAY sync from Sheets → Database.
+    Google Sheets is the source of truth for manual subscription changes.
+    The task does NOT write back to Sheets to avoid overwriting manual changes.
+    
     Features:
     - Auto-calculates start/end dates if not provided in the sheet
     - Updates existing subscriptions or creates new ones
-    - Writes calculated dates back to the sheet
+    - Does NOT write back to Sheets (one-way sync)
     
     Returns:
         Dict with sync results
@@ -665,50 +799,10 @@ def sync_subscriptions_from_sheets_task(self) -> dict:
                 # Commit all changes to database
                 await session.commit()
                 
-            # Update Google Sheets with current state from DB for all changed subscriptions
-            if changed_users:
-                logger.info(f"Updating {len(changed_users)} subscribers in Google Sheets with current state...")
-                async with db_manager.session() as session:
-                    from sqlalchemy import select
-                    from cars_bot.database.models.user import User
-                    from cars_bot.database.models.subscription import Subscription
-                    
-                    for user_id in changed_users:
-                        try:
-                            # Get user and their subscription from DB
-                            user_stmt = select(User).where(User.telegram_user_id == user_id)
-                            user_result = await session.execute(user_stmt)
-                            user = user_result.scalar_one_or_none()
-                            
-                            if not user:
-                                logger.warning(f"User {user_id} not found in DB")
-                                continue
-                            
-                            # Get active subscription (or most recent if none active)
-                            sub_stmt = select(Subscription).where(
-                                Subscription.user_id == user.id,
-                            ).order_by(Subscription.end_date.desc()).limit(1)
-                            sub_result = await session.execute(sub_stmt)
-                            subscription = sub_result.scalar_one_or_none()
-                            
-                            if subscription:
-                                # Update Google Sheets with current state from DB
-                                sheets_manager.update_subscriber_status(
-                                    user_id=user_id,
-                                    subscription_type=subscription.subscription_type.value,
-                                    is_active=subscription.is_active,
-                                    start_date=subscription.start_date,
-                                    end_date=subscription.end_date,
-                                )
-                                logger.info(
-                                    f"✅ Updated sheets for user {user_id}: "
-                                    f"{subscription.subscription_type.value}, "
-                                    f"active={subscription.is_active}, "
-                                    f"{subscription.start_date} - {subscription.end_date}"
-                                )
-                        except Exception as e:
-                            logger.error(f"Failed to update sheets for user {user_id}: {e}")
-
+            # REMOVED: Do NOT write back to Google Sheets after sync
+            # Google Sheets is the source of truth for manual subscription changes
+            # Writing back would overwrite manual changes made in the sheet
+            
             sync_time = time.time() - start_time
 
             logger.info(
