@@ -153,27 +153,29 @@ def process_post_task(self, post_id: int) -> dict:
                     )
                     session.add(car_data)
                     
-                    # Save AI-extracted contacts (replacing old regex extraction)
-                    if result.contacts:
-                        from cars_bot.database.models.seller_contact import SellerContact
-                        
-                        # Check if seller_contact already exists (from regex)
-                        if post.seller_contact:
-                            # Update existing contact with AI data
-                            post.seller_contact.telegram_username = result.contacts.telegram_username or post.seller_contact.telegram_username
-                            post.seller_contact.phone_number = result.contacts.phone_number or post.seller_contact.phone_number
-                            post.seller_contact.other_contacts = result.contacts.other_contacts or post.seller_contact.other_contacts
-                            logger.info(f"📞 Updated contacts for post {post_id} with AI data")
-                        else:
-                            # Create new seller contact
-                            seller_contact = SellerContact(
-                                post_id=post.id,
-                                telegram_username=result.contacts.telegram_username,
-                                phone_number=result.contacts.phone_number,
-                                other_contacts=result.contacts.other_contacts,
-                            )
-                            session.add(seller_contact)
-                            logger.info(f"📞 Saved AI-extracted contacts for post {post_id}")
+                    # REMOVED: Contacts now come from channel settings in Google Sheets
+                    # AI no longer extracts or updates contact information
+                    # All posts from the same channel share contact data configured in Google Sheets
+                    # if result.contacts:
+                    #     from cars_bot.database.models.seller_contact import SellerContact
+                    #
+                    #     # Check if seller_contact already exists (from regex)
+                    #     if post.seller_contact:
+                    #         # Update existing contact with AI data
+                    #         post.seller_contact.telegram_username = result.contacts.telegram_username or post.seller_contact.telegram_username
+                    #         post.seller_contact.phone_number = result.contacts.phone_number or post.seller_contact.phone_number
+                    #         post.seller_contact.other_contacts = result.contacts.other_contacts or post.seller_contact.other_contacts
+                    #         logger.info(f"📞 Updated contacts for post {post_id} with AI data")
+                    #     else:
+                    #         # Create new seller contact
+                    #         seller_contact = SellerContact(
+                    #             post_id=post.id,
+                    #             telegram_username=result.contacts.telegram_username,
+                    #             phone_number=result.contacts.phone_number,
+                    #             other_contacts=result.contacts.other_contacts,
+                    #         )
+                    #         session.add(seller_contact)
+                    #         logger.info(f"📞 Saved AI-extracted contacts for post {post_id}")
 
                     # Save generated description
                     if result.unique_description:

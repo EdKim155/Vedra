@@ -289,6 +289,8 @@ class GoogleSheetsManager:
                         id=record.get("ID"),
                         username=username,
                         title=record.get("Название канала", ""),
+                        phone_number=record.get("Номер"),
+                        telegram_username=record.get("Телеграмм"),
                         is_active=record.get("Активен", True),
                         date_added=date_added,
                         published_posts=int(record.get("Опубликовано", 0) or 0),
