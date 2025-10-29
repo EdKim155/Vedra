@@ -114,21 +114,14 @@ async def subscription_info_callback(callback: CallbackQuery) -> None:
         "ℹ️ <b>О подписке</b>\n\n"
         
         "<b>Что дает подписка?</b>\n"
-        "• Доступ к контактам продавцов\n"
-        "• Ссылки на оригинальные объявления\n"
         "• Telegram контакты продавцов\n"
         "• Номера телефонов (если доступны)\n\n"
         
         "<b>Тарифы:</b>\n"
-        "📅 Месячная — 299₽/месяц\n"
-        "📆 Годовая — 2990₽/год (экономия 25%)\n\n"
+        "📅 Месячная — 190₽/месяц\n"
+        "📆 Годовая — 1990₽/год (экономия 38%)\n\n"
         
-        "<b>Оплата:</b>\n"
-        "• Банковские карты (Visa, MasterCard, МИР)\n"
-        "• YooKassa (безопасные платежи)\n"
-        "• Telegram Stars\n\n"
-        
-        "❓ Вопросы? Пишите @support"
+        "❓ Вопросы? Пишите @seednk"
     )
     
     keyboard = get_subscription_info_keyboard()
@@ -182,18 +175,20 @@ async def subscribe_callback(
         session: Database session
         has_active_subscription: Whether user has active subscription (from middleware)
     """
-    subscription_type = callback.data.split(":")[1]  # "monthly" or "yearly"
+    from cars_bot.config import get_settings
+    from cars_bot.payments import YooKassaPaymentService
+    
+    settings = get_settings()
+    subscription_type_str = callback.data.split(":")[1]  # "monthly" or "yearly"
     
     # Get subscription details
-    if subscription_type == "monthly":
+    if subscription_type_str == "monthly":
         sub_type = SubscriptionType.MONTHLY
-        price = 299
-        duration = timedelta(days=30)
+        price = settings.payment.monthly_price
         duration_text = "1 месяц"
-    elif subscription_type == "yearly":
+    elif subscription_type_str == "yearly":
         sub_type = SubscriptionType.YEARLY
-        price = 2990
-        duration = timedelta(days=365)
+        price = settings.payment.yearly_price
         duration_text = "1 год"
     else:
         await callback.answer("Неизвестный тип подписки", show_alert=True)
@@ -207,53 +202,133 @@ async def subscribe_callback(
         )
         return
     
-    # Show payment information
-    payment_text = (
-        f"💳 <b>Оформление подписки</b>\n\n"
-        f"📋 <b>Тариф:</b> {_get_subscription_type_name(sub_type)}\n"
-        f"⏰ <b>Срок:</b> {duration_text}\n"
-        f"💰 <b>Стоимость:</b> {price}₽\n\n"
-        f"Нажмите кнопку ниже для оплаты.\n"
-        f"После оплаты подписка активируется автоматически."
-    )
-    
-    # TODO: Create actual payment URL via payment provider
-    # For now, using placeholder
-    payment_url = None  # Will be replaced with actual payment URL
-    
-    keyboard = get_payment_keyboard(payment_url)
-    
+    # Show processing message
     await callback.message.edit_text(
-        text=payment_text,
-        reply_markup=keyboard,
+        text="⏳ Создаем платеж...",
         parse_mode="HTML"
     )
     
-    await callback.answer()
+    try:
+        # Create payment via YooKassa
+        payment_service = YooKassaPaymentService()
+        payment = await payment_service.create_payment(
+            user=user,
+            subscription_type=sub_type,
+            session=session,
+            return_url=None  # Will use default from settings
+        )
+        
+        # Show payment information with URL
+        payment_text = (
+            f"💳 <b>Оформление подписки</b>\n\n"
+            f"📋 <b>Тариф:</b> {_get_subscription_type_name(sub_type)}\n"
+            f"⏰ <b>Срок:</b> {duration_text}\n"
+            f"💰 <b>Стоимость:</b> {price}₽\n\n"
+            f"Нажмите кнопку ниже для оплаты.\n"
+            f"После оплаты подписка активируется автоматически."
+        )
+        
+        keyboard = get_payment_keyboard(payment.payment_url)
+        
+        await callback.message.edit_text(
+            text=payment_text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        
+        logger.info(
+            f"User {user.telegram_user_id} initiated {subscription_type_str} subscription purchase "
+            f"(payment_id: {payment.id})"
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to create payment for user {user.telegram_user_id}: {e}")
+        
+        error_text = (
+            "❌ <b>Ошибка при создании платежа</b>\n\n"
+            "Пожалуйста, попробуйте позже или обратитесь в поддержку."
+        )
+        
+        await callback.message.edit_text(
+            text=error_text,
+            parse_mode="HTML"
+        )
     
-    logger.info(
-        f"User {user.telegram_user_id} initiated {subscription_type} subscription purchase"
-    )
+    await callback.answer()
 
 
-@router.callback_query(F.data == "payment:start")
-async def payment_start_callback(callback: CallbackQuery, user: User) -> None:
+@router.callback_query(F.data == "payment:check")
+async def payment_check_callback(
+    callback: CallbackQuery,
+    user: User,
+    session: AsyncSession
+) -> None:
     """
-    Start payment process (placeholder for now).
+    Check payment status.
     
     Args:
         callback: Callback query
         user: User model from context
+        session: Database session
     """
-    # TODO: Implement actual payment integration
-    # For now, just show a message
+    from sqlalchemy import select
+    from cars_bot.database.models.payment import Payment
+    from cars_bot.database.enums import PaymentStatus
+    from cars_bot.payments import YooKassaPaymentService
     
-    await callback.answer(
-        "Интеграция с платежной системой в процессе разработки",
-        show_alert=True
+    # Find user's pending payment
+    result = await session.execute(
+        select(Payment)
+        .where(Payment.user_id == user.id)
+        .where(Payment.status == PaymentStatus.PENDING)
+        .order_by(Payment.created_at.desc())
+        .limit(1)
     )
+    payment = result.scalar_one_or_none()
     
-    logger.info(f"User {user.telegram_user_id} attempted to start payment")
+    if not payment:
+        await callback.answer(
+            "Платеж не найден",
+            show_alert=True
+        )
+        return
+    
+    try:
+        # Check payment status
+        payment_service = YooKassaPaymentService()
+        status = await payment_service.check_payment_status(payment, session)
+        
+        if status == PaymentStatus.SUCCEEDED:
+            await callback.answer(
+                "✅ Платеж прошел успешно! Подписка активирована.",
+                show_alert=True
+            )
+            
+            # Update message
+            await callback.message.edit_text(
+                text=(
+                    "✅ <b>Оплата прошла успешно!</b>\n\n"
+                    "Подписка активирована. Используйте /subscription для просмотра деталей."
+                ),
+                parse_mode="HTML"
+            )
+        elif status == PaymentStatus.PENDING:
+            await callback.answer(
+                "⏳ Платеж еще обрабатывается",
+                show_alert=True
+            )
+        else:
+            await callback.answer(
+                "❌ Платеж не прошел",
+                show_alert=True
+            )
+    
+    except Exception as e:
+        logger.error(f"Error checking payment status: {e}")
+        await callback.answer(
+            "Ошибка при проверке статуса платежа",
+            show_alert=True
+        )
 
 
 @router.callback_query(F.data == "payment:cancel")

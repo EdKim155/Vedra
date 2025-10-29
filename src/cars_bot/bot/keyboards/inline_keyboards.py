@@ -92,6 +92,10 @@ def get_payment_keyboard(payment_url: Optional[str] = None) -> InlineKeyboardMar
             text="💳 Оплатить",
             url=payment_url
         )
+        builder.button(
+            text="🔄 Проверить оплату",
+            callback_data="payment:check"
+        )
     else:
         builder.button(
             text="💳 Оплатить",

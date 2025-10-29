@@ -1,7 +1,9 @@
 #!/bin/bash
 # Start Monitor Service
 
-cd "/Users/edgark/CARS BOT"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
 
 # Load .env file
 set -a
@@ -16,7 +18,7 @@ if [ -n "$ADMIN_USER_IDS" ]; then
 fi
 export GOOGLE_SPREADSHEET_ID="$GOOGLE_SHEETS_ID"
 export GOOGLE_CREDENTIALS_FILE="$GOOGLE_SERVICE_ACCOUNT_FILE"
-export PYTHONPATH="/Users/edgark/CARS BOT/src:$PYTHONPATH"
+export PYTHONPATH="$PROJECT_DIR/src:$PYTHONPATH"
 
 source venv/bin/activate
 

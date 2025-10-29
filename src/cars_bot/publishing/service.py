@@ -81,7 +81,8 @@ class PublishingService:
         processed_text: Optional[str] = None,
         post_id: Optional[int] = None,
         add_contact_link: bool = True,
-        bot_username: Optional[str] = None
+        bot_username: Optional[str] = None,
+        has_media: bool = False
     ) -> str:
         """
         Format post according to template from TZ section 2.3.1.
@@ -108,6 +109,7 @@ class PublishingService:
             processed_text: AI-generated description (optional)
             post_id: Post ID for contact link
             add_contact_link: Whether to add contact hyperlink at the end
+            has_media: Whether the post has media files
         
         Returns:
             Formatted post text
@@ -135,7 +137,14 @@ class PublishingService:
             # Use provided username or cached one
             username = bot_username or self._bot_username or 'bot'
             contact_link = f"https://t.me/{username}?start=contact_{post_id}"
-            post_text += f"\n\n📞 <a href='{contact_link}'>Получить контакты</a>"
+            
+            # Adaptive link text based on media presence
+            if has_media:
+                link_text = "Получить контакты и ссылку на оригинальный пост с медиа"
+            else:
+                link_text = "Получить контакты"
+            
+            post_text += f"\n\n📞 <a href='{contact_link}'>{link_text}</a>"
         
         return post_text
     
@@ -308,16 +317,26 @@ class PublishingService:
             # Get bot username for contact link
             bot_username = await self._get_bot_username()
 
+            # Check if post has media
+            has_media = bool(post.message_ids) or bool(post.media_files)
+
             # Format post text with contact hyperlink
             post_text = self.format_post(
                 car_data=post.car_data,
                 processed_text=post.processed_text,
                 post_id=post_id,
                 add_contact_link=True,
-                bot_username=bot_username
+                bot_username=bot_username,
+                has_media=has_media
             )
 
             message_id = None
+
+            # Debug: Log post details
+            logger.info(
+                f"📋 Post {post_id} details: message_ids={post.message_ids}, "
+                f"media_files={post.media_files}, media_group_id={post.media_group_id}"
+            )
 
             # Publish based on media availability
             # Priority: Check for message_ids (copy approach)
@@ -553,6 +572,7 @@ class PublishingService:
         Returns:
             Message ID if successful, None otherwise
         """
+        logger.info(f"🎬 _publish_single_message_by_copying called for post {post.id}")
         try:
             # Validate post data
             if not post.source_channel:
@@ -600,16 +620,19 @@ class PublishingService:
                         raise ValueError("No media in source message")
                     
                     # Send message using Telethon directly to target channel
-                    # Parse target channel ID
-                    if self.channel_id.startswith('-100'):
-                        target_numeric = int(self.channel_id.replace('-100', ''))
-                    else:
-                        target_numeric = int(self.channel_id)
+                    # Parse target channel ID - use PeerChannel for reliability
+                    from telethon.tl.types import PeerChannel
                     
-                    logger.info(f"Sending media to target channel {target_numeric}")
+                    if self.channel_id.startswith('-100'):
+                        channel_numeric = int(self.channel_id.replace('-100', ''))
+                        target_entity = PeerChannel(channel_numeric)
+                        logger.info(f"Sending media to PeerChannel({channel_numeric})")
+                    else:
+                        target_entity = self.channel_id
+                        logger.info(f"Sending media to {target_entity}")
                     
                     sent_message = await telethon_client.send_message(
-                        entity=target_numeric,
+                        entity=target_entity,
                         message=caption,
                         file=source_message.media,
                         parse_mode='html'
@@ -711,6 +734,7 @@ class PublishingService:
         Returns:
             Message ID of first message in album if successful, None otherwise
         """
+        logger.info(f"🎬 _publish_media_group_by_copying called for post {post.id}")
         try:
             # Validate post data
             if not post.source_channel:
@@ -758,20 +782,36 @@ class PublishingService:
                         raise ValueError("No media in source messages")
                     
                     # Send media group using Telethon
-                    # Parse target channel ID
-                    if self.channel_id.startswith('-100'):
-                        target_numeric = int(self.channel_id.replace('-100', ''))
-                    else:
-                        target_numeric = int(self.channel_id)
+                    # Parse target channel ID - use username for reliable access
+                    # Bot news channel: try to use username first, fallback to numeric ID
+                    from telethon.tl.types import PeerChannel
                     
-                    logger.info(f"Sending media group to target channel {target_numeric}")
+                    # Try username first (more reliable)
+                    try:
+                        # Get bot's news channel username from settings
+                        # For now, hardcode or use channel_id
+                        target_entity = int(self.channel_id) if self.channel_id.startswith('-100') else self.channel_id
+                        
+                        # For channel with -100 prefix, convert to PeerChannel
+                        if self.channel_id.startswith('-100'):
+                            channel_numeric = int(self.channel_id.replace('-100', ''))
+                            target_entity = PeerChannel(channel_numeric)
+                            logger.info(f"Using PeerChannel({channel_numeric}) for target")
+                        else:
+                            target_entity = self.channel_id
+                            logger.info(f"Using channel ID/username: {target_entity}")
+                    except Exception as e:
+                        logger.warning(f"Error parsing target channel: {e}")
+                        raise
                     
                     # Send media group - use send_file with multiple files
                     media_files = [msg.media for msg in source_messages if msg.media]
                     
+                    logger.info(f"Sending {len(media_files)} media files to target channel")
+                    
                     # First message gets the caption
                     sent_messages = await telethon_client.send_file(
-                        entity=target_numeric,
+                        entity=target_entity,
                         file=media_files,
                         caption=caption,
                         parse_mode='html'
@@ -974,13 +1014,17 @@ class PublishingService:
             # Get bot username for contact link
             bot_username = await self._get_bot_username()
 
+            # Check if post has media
+            has_media = bool(post.message_ids) or bool(post.media_files)
+
             # Format updated text with embedded hyperlink
             post_text = self.format_post(
                 car_data=post.car_data,
                 processed_text=post.processed_text,
                 post_id=post_id,
                 add_contact_link=True,
-                bot_username=bot_username
+                bot_username=bot_username,
+                has_media=has_media
             )
 
             # Update message in channel (no inline keyboard, hyperlink in text)

@@ -659,6 +659,9 @@ class GoogleSheetsManager:
     def update_subscribers(self, subscribers_data: list[dict]) -> None:
         """
         Bulk update all subscribers in the sheet.
+        
+        ⚠️ DEPRECATED: This method overwrites manual subscription changes!
+        Use update_subscriber_safe_fields() instead for existing users.
 
         Args:
             subscribers_data: List of subscriber dictionaries with keys:
@@ -672,6 +675,11 @@ class GoogleSheetsManager:
                 - end_date
                 - registered_at
         """
+        logger.warning(
+            "update_subscribers() is deprecated and overwrites manual changes. "
+            "Consider using update_subscriber_safe_fields() instead."
+        )
+        
         try:
             worksheet = self._get_worksheet(self.SHEET_SUBSCRIBERS)
             
@@ -717,6 +725,65 @@ class GoogleSheetsManager:
         except Exception as e:
             logger.error(f"Error bulk updating subscribers: {e}")
             raise
+    
+    def update_subscriber_safe_fields(
+        self,
+        user_id: int,
+        username: Optional[str] = None,
+        name: Optional[str] = None,
+        contact_requests: Optional[int] = None,
+    ) -> bool:
+        """
+        Update only safe fields (non-subscription) for existing subscriber.
+        
+        This method DOES NOT touch subscription columns (Type, Active, Start Date, End Date).
+        Use this to update user info without overwriting manual subscription changes.
+        
+        Args:
+            user_id: Telegram user ID
+            username: Username to update (Column B)
+            name: Full name to update (Column C)
+            contact_requests: Contact requests count (Column I)
+        
+        Returns:
+            True if updated, False if user not found
+        """
+        try:
+            worksheet = self._get_worksheet(self.SHEET_SUBSCRIBERS)
+            self.rate_limiter.wait_if_needed()
+            
+            # Find the row with this user
+            cell = worksheet.find(str(user_id))
+            
+            if cell is None:
+                logger.debug(f"Subscriber {user_id} not found in sheet for safe update")
+                return False
+            
+            row = cell.row
+            
+            # Update only safe fields (NOT subscription columns D, E, F, G)
+            updates = []
+            if username is not None:
+                updates.append(gspread.Cell(row, 2, username))  # Column B
+            if name is not None:
+                updates.append(gspread.Cell(row, 3, name))  # Column C
+            if contact_requests is not None:
+                updates.append(gspread.Cell(row, 9, contact_requests))  # Column I
+            
+            if updates:
+                self.rate_limiter.wait_if_needed()
+                worksheet.update_cells(updates)
+                logger.debug(f"Updated safe fields for subscriber {user_id}")
+                return True
+            
+            return False
+
+        except APIError as e:
+            logger.error(f"Google Sheets API error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error updating subscriber safe fields: {e}")
+            return False
 
     def write_log(self, log_entry: LogRow) -> None:
         """

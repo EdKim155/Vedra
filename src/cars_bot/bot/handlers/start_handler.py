@@ -208,6 +208,18 @@ async def _handle_contact_request(
                 
                 await session.commit()
                 logger.info(f"Logged contact request for post {post_id} from user {user.telegram_user_id}")
+                
+                # Update contact count in Google Sheets asynchronously
+                try:
+                    from cars_bot.tasks.sheets_tasks import update_user_contact_count_task
+                    update_user_contact_count_task.apply_async(
+                        args=[user.telegram_user_id, user.contact_requests_count],
+                        queue='sheets_sync',
+                        priority=2
+                    )
+                except Exception as sheets_error:
+                    # Don't fail if sheets update fails
+                    logger.warning(f"Failed to queue sheets update for contact count: {sheets_error}")
         
         except Exception as e:
             logger.error(f"Error logging contact request: {e}", exc_info=True)

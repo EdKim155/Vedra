@@ -90,7 +90,7 @@ class User(Base, TimestampMixin, ReprMixin):
         back_populates="user",
         cascade="all, delete-orphan",
         lazy="select",
-        order_by="Payment.date_created.desc()"
+        order_by="Payment.created_at.desc()"
     )
 
     contact_requests: Mapped[List["ContactRequest"]] = relationship(

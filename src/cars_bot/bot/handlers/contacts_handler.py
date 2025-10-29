@@ -131,6 +131,18 @@ async def get_contacts_callback(
             user.contact_requests_count += 1
             
             await session.commit()
+            
+            # Update contact count in Google Sheets asynchronously
+            try:
+                from cars_bot.tasks.sheets_tasks import update_user_contact_count_task
+                update_user_contact_count_task.apply_async(
+                    args=[user.telegram_user_id, user.contact_requests_count],
+                    queue='sheets_sync',
+                    priority=2
+                )
+            except Exception as sheets_error:
+                # Don't fail if sheets update fails
+                logger.warning(f"Failed to queue sheets update for contact count: {sheets_error}")
     
     except Exception as e:
         logger.error(f"Error logging contact request: {e}", exc_info=True)
@@ -209,9 +221,15 @@ def _format_contacts_with_keyboard(post: Post) -> tuple[str, object]:
         price_formatted = f"{car.price:,}".replace(",", " ")
         contacts_text += f"💰 <b>Цена:</b> {price_formatted}₽\n\n"
     
-    # Add original message link
-    if post.original_message_link:
-        contacts_text += f"📝 <a href='{post.original_message_link}'>Оригинальное объявление</a>\n\n"
+    # Add original message link ONLY if post has media
+    has_media = bool(post.message_ids) or bool(post.media_files)
+    logger.debug(
+        f"Contact display for post {post.id}: has_media={has_media}, "
+        f"message_ids={post.message_ids}, media_files={post.media_files}, "
+        f"original_link={post.original_message_link}"
+    )
+    if post.original_message_link and has_media:
+        contacts_text += f"📝 <a href='{post.original_message_link}'>Оригинальное объявление с медиа</a>\n\n"
     
     # Main text
     contacts_text += "<b>Связаться с продавцом:</b>\n"

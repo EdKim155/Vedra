@@ -30,9 +30,10 @@ export GOOGLE_SPREADSHEET_ID="$GOOGLE_SHEETS_ID"
 export GOOGLE_CREDENTIALS_FILE="$GOOGLE_SERVICE_ACCOUNT_FILE"
 export PYTHONPATH="$(pwd)/src:$PYTHONPATH"
 
-# Check if virtual environment is activated
+# Activate virtual environment
 if [ -z "$VIRTUAL_ENV" ]; then
-    echo "⚠️  Warning: Virtual environment not activated"
+    echo "Activating virtual environment..."
+    source venv/bin/activate
 fi
 
 # Check if Redis is running

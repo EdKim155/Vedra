@@ -18,6 +18,28 @@ from cars_bot.database.models.user import User
 logger = logging.getLogger(__name__)
 
 
+def _add_user_to_sheets_async(user_id: int, telegram_user_id: int) -> None:
+    """
+    Add new user to Google Sheets asynchronously via Celery task.
+    
+    Args:
+        user_id: Internal database user ID
+        telegram_user_id: Telegram user ID
+    """
+    try:
+        from cars_bot.tasks.sheets_tasks import add_new_user_to_sheets_task
+        # Queue the task asynchronously
+        add_new_user_to_sheets_task.apply_async(
+            args=[user_id, telegram_user_id],
+            queue='sheets_sync',
+            priority=5  # Medium priority
+        )
+        logger.info(f"Queued task to add user {telegram_user_id} to Google Sheets")
+    except Exception as e:
+        # Don't fail user registration if sheets sync fails
+        logger.error(f"Failed to queue sheets sync task for user {telegram_user_id}: {e}")
+
+
 class UserRegistrationMiddleware(BaseMiddleware):
     """
     Middleware for automatic user registration.
@@ -103,9 +125,12 @@ class UserRegistrationMiddleware(BaseMiddleware):
                 await session.refresh(user)
                 
                 logger.info(
-                    f"Registered new user: {user.telegram_user_id} "
+                    f"✅ Registered new user: {user.telegram_user_id} "
                     f"(@{user.username or 'no_username'})"
                 )
+                
+                # Add user to Google Sheets asynchronously
+                _add_user_to_sheets_async(user.id, user.telegram_user_id)
             
             # Add user to context for handlers
             data["user"] = user

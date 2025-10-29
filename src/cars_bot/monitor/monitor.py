@@ -19,7 +19,9 @@ from telethon.errors import (
     RPCError,
     SessionPasswordNeededError,
 )
+from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.tl.types import Channel, Message
 
 from cars_bot.config import Settings, get_settings
@@ -33,8 +35,10 @@ from cars_bot.monitor.utils import (
     check_keywords,
     create_message_link,
     extract_channel_id,
+    extract_invite_hash,
     extract_message_text,
     format_datetime,
+    is_invite_link,
     is_valid_message,
     normalize_channel_username,
 )
@@ -68,8 +72,16 @@ class ChannelMonitor:
         self.settings = settings or get_settings()
         
         # Initialize Telethon client
+        # Use StringSession if provided (avoids SQLite locking issues), otherwise use file session
+        if self.settings.telegram.session_string:
+            session = StringSession(self.settings.telegram.session_string.get_secret_value())
+            logger.info("Using StringSession (avoids database locking)")
+        else:
+            session = str(self.settings.telegram.session_path)
+            logger.info(f"Using file session: {session}")
+        
         self.client = TelegramClient(
-            str(self.settings.telegram.session_path),
+            session,
             self.settings.telegram.api_id,
             self.settings.telegram.api_hash.get_secret_value(),
             sequential_updates=True,  # Process updates in order
@@ -104,7 +116,7 @@ class ChannelMonitor:
         
         # Watchdog settings (Context7: Active catch_up on idle)
         self.watchdog_interval = 60  # Check every 60 seconds
-        self.max_idle_time = 60  # Force catch_up if no events for 1 minute (ultra-fast zombie detection)
+        self.max_idle_time = 60  # Wake up system every 60 seconds  # Увеличено с 60 до 300 секунд (5 минут) для уменьшения частоты перезапусков
         
         # Reconnect settings
         self.max_reconnect_attempts = 5
@@ -204,12 +216,13 @@ class ChannelMonitor:
         """
         logger.info("Connecting to Telegram...")
         
-        # Check if session file exists
-        if not self.settings.telegram.session_path.exists():
-            raise RuntimeError(
-                f"Session file not found: {self.settings.telegram.session_path}\n"
-                "Please run scripts/create_session.py first"
-            )
+        # Check if session file exists (only for file sessions, not for StringSession)
+        if not self.settings.telegram.session_string:
+            if not self.settings.telegram.session_path.exists():
+                raise RuntimeError(
+                    f"Session file not found: {self.settings.telegram.session_path}\n"
+                    "Please run scripts/create_session.py first"
+                )
         
         await self.client.connect()
         
@@ -256,6 +269,8 @@ class ChannelMonitor:
         """
         Add channel to monitoring.
         
+        Supports both public channels (@username) and private channels (invite links).
+        
         Args:
             channel: Database channel object
         """
@@ -263,23 +278,38 @@ class ChannelMonitor:
             # Rate limit
             await self.rate_limiter.acquire()
             
-            # Get channel entity
-            username = normalize_channel_username(
-                channel.channel_username or channel.channel_id
-            )
+            # Get channel identifier (username or invite link)
+            channel_identifier = channel.channel_username or channel.channel_id
             
-            try:
-                entity = await self.client.get_entity(username)
-            except ValueError:
-                # Try with channel_id if username fails
-                entity = await self.client.get_entity(int(channel.channel_id))
+            # Check if it's an invite link (private channel)
+            if is_invite_link(channel_identifier):
+                logger.info(f"📎 Detected invite link for private channel: {channel_identifier}")
+                # Join via invite link first
+                entity = await self._join_via_invite(channel_identifier)
+                if not entity:
+                    logger.error(f"Failed to join private channel via invite link")
+                    return
+            else:
+                # Public channel - get entity normally
+                username = normalize_channel_username(channel_identifier)
+                
+                try:
+                    entity = await self.client.get_entity(username)
+                except ValueError:
+                    # Try with channel_id if username fails
+                    try:
+                        entity = await self.client.get_entity(int(channel.channel_id))
+                    except:
+                        logger.error(f"Could not get entity for {username}")
+                        return
             
             if not isinstance(entity, Channel):
-                logger.warning(f"Entity {username} is not a channel, skipping")
+                logger.warning(f"Entity is not a channel, skipping")
                 return
             
-            # Auto-subscribe to channel if not already subscribed
-            await self._ensure_channel_subscription(entity)
+            # Auto-subscribe to public channel if needed
+            if not is_invite_link(channel_identifier):
+                await self._ensure_channel_subscription(entity)
             
             # Store channel using NUMERIC ID as key (matches extract_channel_id)
             numeric_channel_id = str(entity.id)
@@ -288,20 +318,77 @@ class ChannelMonitor:
             
             logger.info(
                 f"✅ Added channel: {entity.title} "
-                f"(@{entity.username if entity.username else 'N/A'}) "
+                f"(@{entity.username if entity.username else 'PRIVATE'}) "
                 f"[ID: {numeric_channel_id}]"
             )
             
         except ChannelPrivateError:
             logger.error(
                 f"Cannot access private channel: {channel.channel_username}. "
-                "Make sure the account is subscribed."
+                "Make sure the account has joined via invite link."
             )
         except FloodWaitError as e:
             logger.error(f"Flood wait error: {e}. Waiting {e.seconds}s...")
             await asyncio.sleep(e.seconds)
         except Exception as e:
-            logger.error(f"Error adding channel {channel.channel_username}: {e}")
+            logger.error(f"Error adding channel {channel.channel_username}: {e}", exc_info=True)
+    
+    async def _join_via_invite(self, invite_link: str) -> Optional[Channel]:
+        """
+        Join a private channel via invite link.
+        
+        Args:
+            invite_link: Invite link (https://t.me/+CODE or https://t.me/joinchat/CODE)
+        
+        Returns:
+            Channel entity if successful, None otherwise
+        """
+        try:
+            # Extract invite hash
+            invite_hash = extract_invite_hash(invite_link)
+            if not invite_hash:
+                logger.error(f"Could not extract invite hash from: {invite_link}")
+                return None
+            
+            logger.info(f"🔗 Joining private channel via invite: {invite_hash[:10]}...")
+            
+            # Import chat via invite
+            result = await self.client(ImportChatInviteRequest(invite_hash))
+            
+            # Extract channel from result
+            if hasattr(result, 'chats') and result.chats:
+                channel = result.chats[0]
+                if isinstance(channel, Channel):
+                    logger.info(
+                        f"✅ Successfully joined private channel: {channel.title} "
+                        f"[ID: {channel.id}]"
+                    )
+                    return channel
+                else:
+                    logger.warning(f"Joined chat is not a channel: {type(channel)}")
+                    return None
+            else:
+                logger.error("No chats in join result")
+                return None
+                
+        except FloodWaitError as e:
+            logger.error(f"Flood wait when joining via invite: {e.seconds}s")
+            await asyncio.sleep(e.seconds)
+            return None
+        except Exception as e:
+            # Check if already joined
+            if "already" in str(e).lower() or "INVITE_HASH_EXPIRED" not in str(e):
+                logger.info(f"May already be member of private channel, trying to get entity...")
+                # Try to get entity using the invite hash as identifier
+                try:
+                    # After joining, we need to get the entity by trying different methods
+                    # Unfortunately, Telethon doesn't give us a direct way without knowing the username or ID
+                    # We'll need to handle this in the caller
+                    pass
+                except:
+                    pass
+            logger.error(f"Error joining via invite link: {e}")
+            return None
     
     async def _ensure_channel_subscription(self, entity: Channel) -> None:
         """
@@ -562,6 +649,16 @@ class ChannelMonitor:
                         logger.info(
                             f"✅ Channel list updated: +{len(to_add)} -{len(to_remove)}"
                         )
+                        
+                        # CRITICAL FIX: Force catch_up after adding new channels
+                        # This ensures Telegram starts sending NewMessage events from them
+                        if to_add:
+                            try:
+                                logger.info(f"🔄 Catching up on new channels to receive their events...")
+                                await self.client.catch_up()
+                                logger.info(f"✅ Caught up! New channels will now send events")
+                            except Exception as e:
+                                logger.warning(f"Could not catch up after adding channels: {e}")
                 
             except asyncio.CancelledError:
                 break

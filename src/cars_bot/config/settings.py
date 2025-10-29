@@ -235,6 +235,11 @@ class TelegramSessionConfig(BaseSettings):
         description="API Hash from https://my.telegram.org"
     )
     
+    session_string: Optional[SecretStr] = Field(
+        default=None,
+        description="Telethon StringSession (if provided, used instead of file session)"
+    )
+    
     session_name: str = Field(
         default="monitor_session",
         description="Name for Telethon session file"
@@ -546,6 +551,71 @@ class MetricsConfig(BaseSettings):
     )
 
 
+class PaymentConfig(BaseSettings):
+    """
+    Payment system configuration (YooKassa).
+    
+    Settings for YooKassa payment integration.
+    """
+    
+    model_config = SettingsConfigDict(env_prefix="PAYMENT_")
+    
+    yookassa_secret_key: SecretStr = Field(
+        ...,
+        description="YooKassa secret key (live_...)"
+    )
+    
+    yookassa_shop_id: str = Field(
+        ...,
+        description="YooKassa shop ID"
+    )
+    
+    webhook_enabled: bool = Field(
+        default=True,
+        description="Enable webhook notifications from YooKassa"
+    )
+    
+    webhook_url: Optional[HttpUrl] = Field(
+        default=None,
+        description="Webhook URL for payment notifications"
+    )
+    
+    webhook_path: str = Field(
+        default="/webhooks/yookassa",
+        description="Webhook path for YooKassa notifications"
+    )
+    
+    monthly_price: int = Field(
+        default=190,
+        ge=1,
+        description="Monthly subscription price in rubles"
+    )
+    
+    yearly_price: int = Field(
+        default=1990,
+        ge=1,
+        description="Yearly subscription price in rubles"
+    )
+    
+    payment_timeout: int = Field(
+        default=3600,
+        ge=60,
+        description="Payment timeout in seconds (default: 1 hour)"
+    )
+    
+    return_url: Optional[HttpUrl] = Field(
+        default=None,
+        description="URL to redirect user after payment"
+    )
+    
+    @model_validator(mode="after")
+    def validate_payment_config(self):
+        """Validate payment configuration."""
+        if self.webhook_enabled and not self.webhook_url:
+            logger.warning("Webhook is enabled but webhook_url is not set")
+        return self
+
+
 # =============================================================================
 # MAIN SETTINGS CLASS
 # =============================================================================
@@ -586,6 +656,7 @@ class Settings(BaseSettings):
     celery: CeleryConfig = Field(default_factory=CeleryConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
+    payment: PaymentConfig = Field(default_factory=PaymentConfig)
     
     @model_validator(mode="after")
     def validate_settings(self):
@@ -706,6 +777,7 @@ __all__ = [
     "CeleryConfig",
     "LoggingConfig",
     "MetricsConfig",
+    "PaymentConfig",
 ]
 
 

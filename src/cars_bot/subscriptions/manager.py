@@ -425,7 +425,7 @@ class SubscriptionManager:
         is_active: bool,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
-    ) -> None:
+    ) -> bool:
         """
         Apply subscription changes from Google Sheets to database.
         
@@ -439,6 +439,9 @@ class SubscriptionManager:
             is_active: Whether subscription is active
             start_date: Optional start date (auto-calculated if None)
             end_date: Optional end date (auto-calculated if None)
+
+        Returns:
+            True if subscription was created or updated, False if no changes
 
         Raises:
             SubscriptionError: If update fails
@@ -454,7 +457,7 @@ class SubscriptionManager:
                     f"User with telegram_user_id {telegram_user_id} not found, "
                     f"cannot apply subscription from sheets"
                 )
-                return
+                return False
 
             # Get current active subscription
             sub_stmt = (
@@ -468,6 +471,11 @@ class SubscriptionManager:
             )
             result = await session.execute(sub_stmt)
             current_subscription = result.scalar_one_or_none()
+
+            # FREE subscription means deactivation
+            if subscription_type == SubscriptionType.FREE:
+                is_active = False
+                logger.info(f"FREE subscription detected for user {telegram_user_id}, forcing is_active=False")
 
             # Auto-calculate dates if not provided
             if not start_date:
@@ -484,15 +492,25 @@ class SubscriptionManager:
 
             # Check if we need to create or update subscription
             if current_subscription:
-                # Check if anything changed
-                needs_update = (
-                    current_subscription.subscription_type != subscription_type
-                    or current_subscription.is_active != is_active
-                    or (end_date and current_subscription.end_date != end_date)
-                    or (start_date and current_subscription.start_date != start_date)
-                )
+                # Check if subscription type or active status changed
+                type_changed = current_subscription.subscription_type != subscription_type
+                status_changed = current_subscription.is_active != is_active
+                
+                # Compare dates without microseconds to avoid precision issues
+                start_changed = False
+                end_changed = False
+                if start_date:
+                    start_changed = current_subscription.start_date.replace(microsecond=0) != start_date.replace(microsecond=0)
+                if end_date:
+                    end_changed = current_subscription.end_date.replace(microsecond=0) != end_date.replace(microsecond=0)
+                
+                needs_update = type_changed or status_changed or start_changed or end_changed
 
                 if needs_update:
+                    old_type = current_subscription.subscription_type.value
+                    old_active = current_subscription.is_active
+                    old_end = current_subscription.end_date
+                    
                     # Update existing subscription
                     current_subscription.subscription_type = subscription_type
                     current_subscription.is_active = is_active
@@ -500,14 +518,17 @@ class SubscriptionManager:
                     current_subscription.end_date = end_date
 
                     logger.info(
-                        f"Updated subscription for user {telegram_user_id} "
-                        f"from Google Sheets: {subscription_type.value}, "
-                        f"active={is_active}, end_date={end_date}"
+                        f"✏️ Updated subscription for user {telegram_user_id} from Google Sheets:\n"
+                        f"  Type: {old_type} → {subscription_type.value}\n"
+                        f"  Active: {old_active} → {is_active}\n"
+                        f"  End date: {old_end} → {end_date}"
                     )
+                    return True
                 else:
                     logger.debug(
                         f"No changes needed for subscription of user {telegram_user_id}"
                     )
+                    return False
             else:
                 # Create new subscription
                 subscription = Subscription(
@@ -521,10 +542,12 @@ class SubscriptionManager:
                 session.add(subscription)
 
                 logger.info(
-                    f"Created new subscription for user {telegram_user_id} "
-                    f"from Google Sheets: {subscription_type.value}, "
-                    f"active={is_active}, end_date={end_date}"
+                    f"➕ Created new subscription for user {telegram_user_id} from Google Sheets:\n"
+                    f"  Type: {subscription_type.value}\n"
+                    f"  Active: {is_active}\n"
+                    f"  Period: {start_date} - {end_date}"
                 )
+                return True
 
             await session.flush()
 

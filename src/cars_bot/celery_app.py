@@ -259,15 +259,18 @@ app.conf.beat_schedule = {
             "priority": 3,
         },
     },
-    # Sync subscribers TO Google Sheets every 5 minutes
-    "sync-subscribers-to-sheets-every-5-min": {
-        "task": "cars_bot.tasks.sheets_tasks.sync_subscribers_task",
-        "schedule": timedelta(minutes=5),
-        "options": {
-            "queue": "sheets_sync",
-            "priority": 2,
-        },
-    },
+    # Sync subscribers TO Google Sheets - DISABLED to prevent overwriting manual changes
+    # New users are added via add_new_user_to_sheets_task automatically
+    # Manual subscription changes are synced FROM Google Sheets via sync_subscriptions_from_sheets_task
+    # If you need to update user info (username, name, contact count), use update_subscriber_safe_fields()
+    # "sync-subscribers-to-sheets-every-5-min": {
+    #     "task": "cars_bot.tasks.sheets_tasks.sync_subscribers_task",
+    #     "schedule": timedelta(minutes=5),
+    #     "options": {
+    #         "queue": "sheets_sync",
+    #         "priority": 2,
+    #     },
+    # },
     # Sync subscriptions FROM Google Sheets every 2 minutes (faster for manual management)
     "sync-subscriptions-from-sheets-every-2-min": {
         "task": "cars_bot.tasks.sheets_tasks.sync_subscriptions_from_sheets_task",

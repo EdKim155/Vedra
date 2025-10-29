@@ -10,25 +10,86 @@ from typing import List, Optional
 from loguru import logger
 
 
+def is_invite_link(link: str) -> bool:
+    """
+    Check if link is an invite link (private channel).
+    
+    Args:
+        link: Channel link or username
+    
+    Returns:
+        True if it's an invite link
+    
+    Examples:
+        >>> is_invite_link("https://t.me/+pfBTDBt_C98zNjMy")
+        True
+        >>> is_invite_link("https://t.me/joinchat/AaBbCc")
+        True
+        >>> is_invite_link("@channelname")
+        False
+    """
+    return bool(re.search(r'(t\.me/\+|t\.me/joinchat/|telegram\.me/joinchat/)', link))
+
+
+def extract_invite_hash(link: str) -> Optional[str]:
+    """
+    Extract invite hash from invite link.
+    
+    Args:
+        link: Invite link
+    
+    Returns:
+        Invite hash or None
+    
+    Examples:
+        >>> extract_invite_hash("https://t.me/+pfBTDBt_C98zNjMy")
+        "pfBTDBt_C98zNjMy"
+        >>> extract_invite_hash("https://t.me/joinchat/AaBbCc")
+        "AaBbCc"
+    """
+    # Match +CODE format
+    match = re.search(r't\.me/\+([A-Za-z0-9_-]+)', link)
+    if match:
+        return match.group(1)
+    
+    # Match joinchat/CODE format
+    match = re.search(r'(t\.me|telegram\.me)/joinchat/([A-Za-z0-9_-]+)', link)
+    if match:
+        return match.group(2)
+    
+    return None
+
+
 def normalize_channel_username(username: str) -> str:
     """
     Normalize channel username to standard format.
     
+    Supports both public channels (@username) and private channels (invite links).
+    
     Args:
-        username: Channel username or URL
+        username: Channel username, URL, or invite link
     
     Returns:
-        Normalized username without @ prefix
+        Normalized username without @ prefix OR invite hash for private channels
     
     Examples:
         >>> normalize_channel_username("@channelname")
         "channelname"
         >>> normalize_channel_username("https://t.me/channelname")
         "channelname"
+        >>> normalize_channel_username("https://t.me/+pfBTDBt_C98zNjMy")
+        "+pfBTDBt_C98zNjMy"  (invite link preserved with +)
         >>> normalize_channel_username("channelname")
         "channelname"
     """
-    # Remove common Telegram URL patterns
+    # Check if it's an invite link (private channel)
+    if is_invite_link(username):
+        invite_hash = extract_invite_hash(username)
+        if invite_hash:
+            return f"+{invite_hash}"  # Return with + prefix to indicate invite link
+        return username  # Fallback if extraction fails
+    
+    # Remove common Telegram URL patterns for public channels
     username = re.sub(r"https?://(t\.me|telegram\.me)/", "", username)
     
     # Remove @ prefix
@@ -232,6 +293,8 @@ class MessageDeduplicator:
 
 __all__ = [
     "normalize_channel_username",
+    "is_invite_link",
+    "extract_invite_hash",
     "extract_channel_id",
     "check_keywords",
     "generate_message_hash",

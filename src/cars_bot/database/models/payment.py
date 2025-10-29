@@ -1,11 +1,11 @@
 """
-Payment model for storing payment transactions.
+Payment model for managing payment transactions.
 """
 
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Enum, ForeignKey, Index, Integer, String
+from sqlalchemy import Enum, ForeignKey, Index, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from cars_bot.database.base import Base, ReprMixin, TimestampMixin
@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 class Payment(Base, TimestampMixin, ReprMixin):
     """
     Model for storing payment transactions.
-
-    Tracks all payment attempts and completions for subscriptions.
+    
+    Tracks all payment attempts and their statuses.
     """
 
     __tablename__ = "payments"
@@ -35,69 +35,118 @@ class Payment(Base, TimestampMixin, ReprMixin):
         comment="User who made the payment"
     )
 
-    # Subscription Reference
+    # Subscription Reference (optional, set after payment succeeds)
     subscription_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("subscriptions.id", ondelete="SET NULL"),
         nullable=True,
-        comment="Subscription this payment is for"
+        comment="Subscription created from this payment"
     )
 
-    # Payment Amount
-    amount: Mapped[int] = mapped_column(
-        Integer,
+    # Payment Provider Details
+    provider: Mapped[PaymentProvider] = mapped_column(
+        Enum(PaymentProvider, name="payment_provider", create_constraint=True),
         nullable=False,
-        comment="Payment amount in kopecks (rubles * 100)"
+        comment="Payment provider (yookassa, telegram_stars)"
+    )
+
+    # External Payment ID from provider
+    external_payment_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        unique=True,
+        comment="Payment ID from payment provider (YooKassa payment_id, etc.)"
+    )
+
+    # Payment Status
+    status: Mapped[PaymentStatus] = mapped_column(
+        Enum(PaymentStatus, name="payment_status", create_constraint=True),
+        nullable=False,
+        default=PaymentStatus.PENDING,
+        comment="Payment status"
+    )
+
+    # Amount
+    amount: Mapped[float] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        comment="Payment amount"
     )
 
     currency: Mapped[str] = mapped_column(
         String(3),
+        nullable=False,
         default="RUB",
-        nullable=False,
-        comment="Currency code (ISO 4217)"
+        comment="Payment currency (ISO 4217 code)"
     )
 
-    # Payment Provider
-    payment_provider: Mapped[PaymentProvider] = mapped_column(
-        Enum(PaymentProvider, name="payment_provider", create_constraint=True),
-        nullable=False,
-        comment="Payment service used"
-    )
-
-    payment_id: Mapped[Optional[str]] = mapped_column(
-        String(255),
+    # Description
+    description: Mapped[Optional[str]] = mapped_column(
+        String(500),
         nullable=True,
-        unique=True,
-        comment="External payment ID from provider"
+        comment="Payment description"
     )
 
-    # Status
-    status: Mapped[PaymentStatus] = mapped_column(
-        Enum(PaymentStatus, name="payment_status", create_constraint=True),
-        default=PaymentStatus.PENDING,
+    # Subscription details at the time of payment
+    subscription_type: Mapped[str] = mapped_column(
+        String(50),
         nullable=False,
-        comment="Payment status"
+        comment="Type of subscription (monthly, yearly)"
     )
 
-    # Timestamps
-    date_created: Mapped[datetime] = mapped_column(
-        nullable=False,
-        comment="When payment was initiated"
+    # Payment URLs
+    payment_url: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="Payment URL for user to complete payment"
     )
 
-    date_completed: Mapped[Optional[datetime]] = mapped_column(
+    confirmation_url: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="Confirmation URL from payment provider"
+    )
+
+    # Payment timestamps
+    paid_at: Mapped[Optional[datetime]] = mapped_column(
         nullable=True,
         comment="When payment was completed"
     )
 
-    # Additional Data
-    provider_response: Mapped[Optional[str]] = mapped_column(
+    expires_at: Mapped[Optional[datetime]] = mapped_column(
         nullable=True,
-        comment="Raw response from payment provider (for debugging)"
+        comment="When payment link expires"
     )
 
-    refund_reason: Mapped[Optional[str]] = mapped_column(
+    # Additional metadata (JSON string)
+    payment_metadata: Mapped[Optional[str]] = mapped_column(
+        String(1000),
         nullable=True,
-        comment="Reason for refund if status is REFUNDED"
+        comment="Additional payment metadata (JSON)"
+    )
+
+    # Failure details
+    failure_reason: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="Reason for payment failure"
+    )
+
+    # Refund info
+    refunded: Mapped[bool] = mapped_column(
+        default=False,
+        nullable=False,
+        comment="Whether payment was refunded"
+    )
+
+    refunded_at: Mapped[Optional[datetime]] = mapped_column(
+        nullable=True,
+        comment="When payment was refunded"
+    )
+
+    refund_amount: Mapped[Optional[float]] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        comment="Refunded amount"
     )
 
     # Relationships
@@ -110,25 +159,35 @@ class Payment(Base, TimestampMixin, ReprMixin):
     subscription: Mapped[Optional["Subscription"]] = relationship(
         "Subscription",
         back_populates="payments",
-        lazy="joined"
+        lazy="select"
     )
 
     # Indexes
     __table_args__ = (
         Index("ix_payments_user_id", "user_id"),
-        Index("ix_payments_subscription_id", "subscription_id"),
         Index("ix_payments_status", "status"),
-        Index("ix_payments_payment_id", "payment_id"),
-        Index("ix_payments_date_created", "date_created"),
-        Index("ix_payments_provider", "payment_provider"),
+        Index("ix_payments_external_id", "external_payment_id"),
+        Index("ix_payments_subscription_id", "subscription_id"),
+        Index("ix_payments_provider", "provider"),
+        Index("ix_payments_created_at", "created_at"),
     )
 
     @property
-    def amount_rubles(self) -> float:
-        """Get payment amount in rubles."""
-        return self.amount / 100.0
+    def is_pending(self) -> bool:
+        """Check if payment is pending."""
+        return self.status == PaymentStatus.PENDING
 
     @property
-    def is_completed(self) -> bool:
-        """Check if payment was successfully completed."""
-        return self.status == PaymentStatus.COMPLETED
+    def is_succeeded(self) -> bool:
+        """Check if payment succeeded."""
+        return self.status == PaymentStatus.SUCCEEDED
+
+    @property
+    def is_failed(self) -> bool:
+        """Check if payment failed or canceled."""
+        return self.status in (PaymentStatus.FAILED, PaymentStatus.CANCELED)
+
+    @property
+    def can_be_refunded(self) -> bool:
+        """Check if payment can be refunded."""
+        return self.is_succeeded and not self.refunded
