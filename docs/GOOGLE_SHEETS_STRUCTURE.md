@@ -24,31 +24,38 @@ This document describes the detailed structure of all sheets in the CARS BOT Goo
 | A | ID | Integer | Auto | Automatic identifier | 1 |
 | B | Username канала | String | Yes | Telegram channel username or link | @avito_auto |
 | C | Название канала | String | Yes | Human-readable channel name | Авито Авто |
-| D | Активен | Boolean | Yes | Whether monitoring is enabled | TRUE |
-| E | Ключевые слова | String | No | Comma-separated keywords (optional) | продам,авто,машина |
-| F | Дата добавления | DateTime | Auto | Date when channel was added | 2025-10-23 |
-| G | Всего постов | Integer | Auto | Total posts processed (auto-updated by bot) | 150 |
+| D | Номер | String | No | Seller phone number (manual) | +79991234567 |
+| E | Телеграмм | String | No | Seller Telegram username (manual) | username |
+| F | Активен | Boolean | Yes | Whether monitoring is enabled | TRUE |
+| G | Дата добавления | DateTime | Auto | Date when channel was added | 2025-10-23 |
 | H | Опубликовано | Integer | Auto | Posts published (auto-updated by bot) | 120 |
 | I | Последний пост | DateTime | Auto | Date of last processed post | 2025-10-23 14:30 |
 
 ### Data Validation
 
-- **Column D (Активен):** Dropdown with values: `TRUE`, `FALSE`
+- **Column F (Активен):** Dropdown with values: `TRUE`, `FALSE`
+
+### Contact Information
+
+- **Номер (Column D):** Phone number of the seller for ALL posts from this channel
+- **Телеграмм (Column E):** Telegram username of the seller for ALL posts from this channel
+- These fields are filled manually by admin and apply to all posts from the channel
+- Leave empty if no contact information is available for the channel
 
 ### Usage Notes
 
 - **Username format:** Can be `@username` or full link `t.me/channelname`
-- **Keywords:** Optional filter to narrow down posts from this specific channel
-- **Statistics columns (G, H, I):** Automatically updated by the bot, do not edit manually
+- **Contact data:** All posts from a channel share the same contact information configured here
+- **Statistics columns (H, I):** Automatically updated by the bot, do not edit manually
 - **Active monitoring:** Set `Активен` to `FALSE` to temporarily disable monitoring without deleting the channel
 
 ### Example Data
 
 ```
-ID | Username       | Название    | Активен | Ключевые слова      | Дата добавления | Всего | Опубликовано | Последний пост
-1  | @avito_auto    | Авито Авто  | TRUE    | продам,авто         | 2025-10-23      | 150   | 120          | 2025-10-23 14:30
-2  | @auto_ru       | Авто.ру     | TRUE    | автомобиль,машина   | 2025-10-23      | 200   | 180          | 2025-10-23 15:00
-3  | @test_channel  | Тестовый    | FALSE   |                     | 2025-10-22      | 0     | 0            |
+ID | Username       | Название    | Номер         | Телеграмм  | Активен | Дата добавления | Опубликовано | Последний пост
+1  | @avito_auto    | Авито Авто  | +79991234567  | auto_dealer | TRUE    | 2025-10-23      | 120          | 2025-10-23 14:30
+2  | @auto_ru       | Авто.ру     | +79997654321  | sales_avto  | TRUE    | 2025-10-23      | 180          | 2025-10-23 15:00
+3  | @test_channel  | Тестовый    |               |             | FALSE   | 2025-10-22      | 0            |
 ```
 
 ---

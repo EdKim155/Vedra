@@ -735,7 +735,7 @@ class MessageProcessor:
         
         Creates:
         - Post entry with 'pending' status
-        - SellerContact entry if contacts extracted
+        - SellerContact entry using channel contact data from Google Sheets
         
         Args:
             message_data: Validated message data
@@ -765,16 +765,52 @@ class MessageProcessor:
         session.add(post)
         await session.flush()  # Get post.id
         
-        # Create SellerContact if contacts extracted
-        if message_data.contacts:
-            seller_contact = SellerContact(
-                post_id=post.id,
-                telegram_username=message_data.contacts.telegram_username,
-                telegram_user_id=message_data.contacts.telegram_user_id,
-                phone_number=message_data.contacts.phone_number,
-                other_contacts=message_data.contacts.other_contacts,
+        # Create SellerContact using channel contact data from Google Sheets
+        # All posts from the same channel share the same contact information
+        try:
+            from cars_bot.sheets.manager import GoogleSheetsManager
+            from cars_bot.config import get_settings
+            
+            settings = get_settings()
+            sheets_manager = GoogleSheetsManager(
+                credentials_path=settings.google.credentials_file,
+                spreadsheet_id=settings.google.spreadsheet_id
             )
-            session.add(seller_contact)
+            
+            # Get channels from Google Sheets
+            channels_data = sheets_manager.get_channels(use_cache=True)
+            
+            # Find matching channel by username
+            channel_row = None
+            channel_username_normalized = channel.channel_username.lstrip('@') if channel.channel_username else None
+            
+            for ch in channels_data:
+                ch_username_normalized = ch.username.lstrip('@') if ch.username else None
+                if ch_username_normalized == channel_username_normalized:
+                    channel_row = ch
+                    break
+            
+            if channel_row and (channel_row.phone_number or channel_row.telegram_username):
+                seller_contact = SellerContact(
+                    post_id=post.id,
+                    telegram_username=channel_row.telegram_username,
+                    telegram_user_id=None,  # Not available from sheets
+                    phone_number=channel_row.phone_number,
+                    other_contacts=None,
+                )
+                session.add(seller_contact)
+                logger.info(
+                    f"Added seller contacts from channel settings: "
+                    f"telegram={channel_row.telegram_username}, phone={channel_row.phone_number}"
+                )
+            else:
+                logger.warning(
+                    f"No contact information configured for channel {channel.channel_title}. "
+                    f"Please add contacts in Google Sheets."
+                )
+        except Exception as e:
+            logger.error(f"Failed to fetch channel contact data from Google Sheets: {e}")
+            logger.warning(f"Post {post.id} will be created without seller contact")
         
         # Update channel statistics
         channel.total_posts += 1

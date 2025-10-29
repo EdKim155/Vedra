@@ -15,19 +15,23 @@ class ChannelRow(BaseModel):
     """
     Model for a row in 'Каналы для мониторинга' sheet.
     
-    Structure (columns A-G):
+    Structure (columns A-I):
     A: ID (auto-generated)
     B: Username канала
     C: Название канала
-    D: Активен
-    E: Дата добавления
-    F: Опубликовано
-    G: Последний пост (ссылка на оригинал)
+    D: Номер (phone number - filled manually)
+    E: Телеграмм (telegram username - filled manually)
+    F: Активен
+    G: Дата добавления
+    H: Опубликовано
+    I: Последний пост (ссылка на оригинал)
     """
 
     id: Optional[int] = Field(None, description="Channel ID (auto-generated)")
     username: str = Field(..., description="Channel username or link")
     title: str = Field("", description="Human-readable channel name")
+    phone_number: Optional[str] = Field(None, description="Seller phone number (filled manually)")
+    telegram_username: Optional[str] = Field(None, description="Seller Telegram username (filled manually)")
     is_active: bool = Field(True, description="Whether monitoring is enabled")
     date_added: Optional[datetime] = Field(None, description="When channel was added")
     published_posts: int = Field(0, description="Total posts published")

@@ -22,8 +22,10 @@ def _update_channel_row_in_sheets(sheets_manager, update_data: dict) -> None:
     """
     Update a channel row in Google Sheets.
     
-    Updates columns C (Название канала), E (Дата добавления), F (Опубликовано), G (Последний пост)
+    Updates columns C (Название канала), G (Дата добавления), H (Опубликовано), I (Последний пост)
     for a specific channel by username.
+    
+    Note: Columns D (Номер) and E (Телеграмм) are filled manually by admin and not updated by bot.
     
     Args:
         sheets_manager: GoogleSheetsManager instance
@@ -76,22 +78,22 @@ def _update_channel_row_in_sheets(sheets_manager, update_data: dict) -> None:
             gspread.Cell(row, 3, update_data['title'])
         )
     
-    # Column E (index 5): Дата добавления
+    # Column G (index 7): Дата добавления
     if 'date_added' in update_data and update_data['date_added']:
         updates.append(
-            gspread.Cell(row, 5, update_data['date_added'].strftime("%Y-%m-%d %H:%M:%S"))
+            gspread.Cell(row, 7, update_data['date_added'].strftime("%Y-%m-%d %H:%M:%S"))
         )
     
-    # Column F (index 6): Опубликовано
+    # Column H (index 8): Опубликовано
     if 'published_posts' in update_data:
         updates.append(
-            gspread.Cell(row, 6, update_data['published_posts'])
+            gspread.Cell(row, 8, update_data['published_posts'])
         )
     
-    # Column G (index 7): Последний пост (ссылка)
+    # Column I (index 9): Последний пост (ссылка)
     if 'last_post_link' in update_data and update_data['last_post_link']:
         updates.append(
-            gspread.Cell(row, 7, update_data['last_post_link'])
+            gspread.Cell(row, 9, update_data['last_post_link'])
         )
     
     # Apply batch update
