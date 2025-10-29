@@ -22,9 +22,11 @@ from cars_bot.tasks.monitoring_tasks import (
 )
 from cars_bot.tasks.publishing_tasks import publish_post_task, send_contact_info_task
 from cars_bot.tasks.sheets_tasks import (
+    add_new_user_to_sheets_task,
     log_to_sheets_task,
     sync_channels_task,
     sync_subscribers_task,
+    sync_subscriptions_from_sheets_task,
     update_analytics_task,
 )
 from cars_bot.tasks.subscription_tasks import (
@@ -46,6 +48,8 @@ __all__ = [
     # Sheets tasks
     "sync_channels_task",
     "sync_subscribers_task",
+    "sync_subscriptions_from_sheets_task",
+    "add_new_user_to_sheets_task",
     "update_analytics_task",
     "log_to_sheets_task",
     # Monitoring tasks
